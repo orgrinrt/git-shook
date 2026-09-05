@@ -1,0 +1,46 @@
+#!/bin/sh
+#----------------------------------------------------------------------------------------------------
+# Copyright (c) 2026                          orgrinrt                          orgrinrt@ikiuni.dev
+# SPDX-License-Identifier: MPL-2.0        https://mozilla.org/MPL/2.0        contact@hiisi.digital
+#----------------------------------------------------------------------------------------------------
+#
+# Put git-shook, its man page and its completions somewhere git and the shell
+# will find them.
+#
+#   ./install                 into ~/.local
+#   ./install /usr/local      somewhere else
+#   PREFIX=/opt ./install     the same, by environment
+#
+# Nothing here needs root unless the prefix does.
+
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+prefix=${1:-${PREFIX:-$HOME/.local}}
+
+bin="$prefix/bin"
+man1="$prefix/share/man/man1"
+bashcomp="$prefix/share/bash-completion/completions"
+zshcomp="$prefix/share/zsh/site-functions"
+
+mkdir -p "$bin" "$man1" "$bashcomp" "$zshcomp"
+
+install_file() { # <source> <destination> <mode>
+	cp "$1" "$2"
+	chmod "$3" "$2"
+	printf '  %s\n' "$2"
+}
+
+printf 'installing git-shook into %s\n' "$prefix"
+install_file "$here/git-shook" "$bin/git-shook" 755
+install_file "$here/man/git-shook.1" "$man1/git-shook.1" 644
+install_file "$here/completions/git-shook.bash" "$bashcomp/git-shook" 644
+install_file "$here/completions/_git-shook" "$zshcomp/_git-shook" 644
+
+printf '\n'
+case ":$PATH:" in
+*":$bin:"*) ;;
+*) printf '%s is not on your PATH, so `git shook` will not resolve yet.\n' "$bin" ;;
+esac
+
+printf 'Try `git shook help`, and `git help shook` for the man page.\n'

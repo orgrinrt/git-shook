@@ -1,0 +1,38 @@
+#compdef git-shook
+#
+# zsh completion for `git shook`.
+#
+# Put this on `$fpath` under the name `_git-shook`. zsh's own git completion
+# picks up a `_git-<name>` file for a subcommand it does not know, and it is
+# also reachable directly as `git-shook`.
+
+_git-shook() {
+	local -a commands
+	commands=(
+		'install:read every tracked shook.toml and register what it declares'
+		'list:what is registered, per event, in the order it runs'
+		'doctor:whether what is declared and what is registered agree'
+		'uninstall:remove the registry and put back the hook that was here'
+		'version:print the version'
+		'help:print the usage'
+	)
+
+	_arguments -C \
+		'1: :->cmd' \
+		'*:: :->args'
+
+	case $state in
+	cmd)
+		_describe -t commands 'git shook command' commands
+		;;
+	args)
+		case $words[1] in
+		install)
+			_arguments '(-y --yes)'{-y,--yes}'[do not ask before registering]'
+			;;
+		esac
+		;;
+	esac
+}
+
+_git-shook "$@"

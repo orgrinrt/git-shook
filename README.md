@@ -16,12 +16,24 @@ missing.
 
 ## Usage
 
-Install it by putting the script anywhere on your `PATH` under the name
-`git-shook`, which is all git needs to make `git shook` work:
+Anything on your `PATH` called `git-shook` is what makes `git shook` work, so
+the script alone is enough:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/orgrinrt/git-shook/main/git-shook -o ~/.local/bin/git-shook
 chmod +x ~/.local/bin/git-shook
+```
+
+The installer puts the man page and the shell completions in place as well,
+which the single file cannot do for itself. `git shook --help` is rewritten by
+git into `git help shook` before the program is ever reached, so without the man
+page that spelling answers `No manual entry` no matter what the tool would have
+printed.
+
+```bash
+git clone https://github.com/orgrinrt/git-shook && cd git-shook
+./install                 # into ~/.local
+./install /usr/local      # or wherever
 ```
 
 A project declares what it wants run in a `shook.toml`, committed, anywhere in

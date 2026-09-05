@@ -43,12 +43,37 @@ dispatcher_text() {
 # Runs every entry registered for this event, in sorted order, and stops at the
 # first one that fails. \`git shook list\` shows what is registered.
 
+# Sorted means one thing only if the collation is fixed. Without this the run
+# order is the user's locale, which is not an order anybody can reason about.
+LC_ALL=C
+export LC_ALL
+
 ev=\${0##*/}
-root=\$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+
+# A bare repository has no work tree, so \`--show-toplevel\` fails there and the
+# push hooks a bare repository exists to run would be silently inert. Fall back
+# to the git directory, which is where a bare repository keeps everything.
+root=\$(git rev-parse --show-toplevel 2>/dev/null) ||
+	root=\$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0
+
 d="\$root/.shook/entries/\$ev"
 [ -d "\$d" ] || exit 0
 
-tmp=\$(mktemp -d) || exit 1
+# Anything git handed us by a path relative to the current directory has to be
+# made absolute before an entry is run somewhere else, or it resolves against
+# the wrong directory. \`GIT_INDEX_FILE\` is the one that bites, because a
+# program that is not git itself reads it verbatim.
+if [ -n "\${GIT_INDEX_FILE:-}" ]; then
+	case \$GIT_INDEX_FILE in
+	/*) ;;
+	*)
+		GIT_INDEX_FILE="\$(pwd)/\$GIT_INDEX_FILE"
+		export GIT_INDEX_FILE
+		;;
+	esac
+fi
+
+tmp=\$(mktemp -d 2>/dev/null || mktemp -d -t git-shook) || exit 1
 trap 'rm -rf "\$tmp"' EXIT
 
 : >"\$tmp/stdin"
@@ -90,7 +115,11 @@ function unquote(buf,   i, c, inq, esc, cur, n) {
 		c = substr(buf, i, 1)
 		if (inq) {
 			if (esc) {
-				if (c == "n") cur = cur "\n"
+				# An entry file is one argument per line, so an argument
+				# holding a newline cannot be written down at all. Refused
+				# here rather than decoded, because decoded it would become
+				# two arguments and nothing downstream could tell.
+				if (c == "n") fail("an argument may not contain a newline")
 				else if (c == "t") cur = cur "\t"
 				else cur = cur c
 				esc = 0
@@ -193,6 +222,51 @@ manifest_name() { # <root> <relative manifest path>
 	printf '%s' "$n"
 }
 
+# The name becomes a filename under the entry directory, so one carrying a slash
+# or a `..` writes outside it. Measured before this check existed:
+# `name = "../../escaped"` put a file at `.shook/escaped`.
+#
+# Called from the main shell rather than from inside `manifest_name`, because a
+# `die` inside a command substitution exits the subshell and the script carries
+# on with the bad name in hand. That is how the escape survived the first
+# version of this check.
+check_name() { # <manifest> <name>
+	case $2 in
+	"" | . | ..) die "$1: name is empty or a directory reference" ;;
+	*/* | *\\*) die "$1: a name may not carry a path separator, found \"$2\"" ;;
+	*[!A-Za-z0-9._-]*) die "$1: a name takes letters, digits, dot, dash and underscore, found \"$2\"" ;;
+	esac
+}
+
+# Git's own hook events. An event outside this set is a section nothing will
+# ever run, and `doctor` used to call such a manifest healthy, so it is refused
+# at the point it is read rather than reported later.
+KNOWN_EVENTS="applypatch-msg pre-applypatch post-applypatch pre-commit
+pre-merge-commit prepare-commit-msg commit-msg post-commit pre-rebase
+post-checkout post-merge pre-push pre-receive update proc-receive
+post-receive post-update reference-transaction push-to-checkout pre-auto-gc
+post-rewrite sendemail-validate fsmonitor-watchman p4-changelist
+p4-prepare-changelist p4-post-changelist p4-pre-submit post-index-change"
+
+check_event() { # <manifest> <event>
+	for k in $KNOWN_EVENTS; do
+		[ "$2" = "$k" ] && return 0
+	done
+	die "$1: git has no hook called \"$2\", so nothing would ever run it"
+}
+
+# Two manifests registering the same name at the same event would have the
+# second overwrite the first, with both shown in the listing as if both had
+# been registered.
+SEEN=""
+seen_name() { # <event> <name> <manifest>
+	key="$1/$2"
+	case " $SEEN " in
+	*" $key "*) die "$3: $2 is already registered for $1 by another manifest; give one of them a different name" ;;
+	esac
+	SEEN="$SEEN $key"
+}
+
 # Where a manifest's hooks run, relative to the repository root. Empty for one
 # at the root, which is why nothing here may go through a whitespace-separated
 # field: an empty value has to survive being passed around.
@@ -250,10 +324,13 @@ cmd_install() {
 	printf 'git-shook will register:\n\n'
 	for m in $manifests; do
 		name=$(manifest_name "$root" "$m")
+		check_name "$m" "$name"
 		wd=$(manifest_dir "$m")
 		for ev in $(manifest_read events "$root/$m"); do
+			check_event "$m" "$ev"
 			argv=$(manifest_read argv "$root/$m" "$ev")
 			[ -n "$argv" ] || die "$m: [hooks.$ev] has no run"
+			seen_name "$ev" "$name" "$m"
 			printf '  %-14s %-16s %s' "$ev" "$name" "$(show_argv "$argv")"
 			[ -n "$wd" ] && printf ' (in %s)' "$wd"
 			printf '\n'
@@ -285,6 +362,7 @@ cmd_install() {
 
 	for m in $manifests; do
 		name=$(manifest_name "$root" "$m")
+		check_name "$m" "$name"
 		wd=$(manifest_dir "$m")
 		for ev in $(manifest_read events "$root/$m"); do
 			{
@@ -306,11 +384,24 @@ cmd_install() {
 # can put it back where it was.
 migrate_existing() { # <root> <events>
 	old=$(git -C "$1" config --get core.hooksPath || true)
+	[ "$old" = ".shook/hooks" ] && return 0
+
 	case $old in
-	.shook/hooks | "") from="$1/.git/hooks" ;;
+	# An absolute hooksPath is already a path and must not be joined to the
+	# root, which would produce `/repo//etc/git/hooks`.
+	/*) from=$old ;;
+	"")
+		# `.git` is a file rather than a directory in a linked worktree and
+		# in a submodule, so the hooks directory is not `$root/.git/hooks`
+		# there. Ask git where it is instead of assuming.
+		from=$(git -C "$1" rev-parse --git-path hooks 2>/dev/null) || from="$1/.git/hooks"
+		case $from in
+		/*) ;;
+		*) from="$1/$from" ;;
+		esac
+		;;
 	*) from="$1/$old" ;;
 	esac
-	[ "$old" = ".shook/hooks" ] && return 0
 
 	for ev in $2; do
 		h="$from/$ev"
@@ -320,7 +411,10 @@ migrate_existing() { # <root> <events>
 		chmod +x "$1/.shook/kept/$ev"
 		{
 			printf '\n'
-			printf '%s\n' "sh"
+			# Run it directly rather than through `sh`. It carries its own
+			# shebang and it is as likely to be python or perl as shell, in
+			# which case `sh` turns a hook that worked into a syntax error
+			# while the tool reports it was kept.
 			printf '%s\n' ".shook/kept/$ev"
 		} >"$1/.shook/entries/$ev/00-existing"
 		printf 'kept the %s hook that was already here, as 00-existing\n' "$ev"
@@ -402,9 +496,14 @@ cmd_uninstall() {
 	if [ -d "$root/.shook/kept" ]; then
 		for k in "$root"/.shook/kept/*; do
 			[ -f "$k" ] || continue
-			mkdir -p "$root/.git/hooks"
-			cp "$k" "$root/.git/hooks/${k##*/}"
-			chmod +x "$root/.git/hooks/${k##*/}"
+			# Same as the migration: ask git where hooks live rather than
+			# assuming `.git/hooks`, which is wrong in a linked worktree and
+			# in a submodule.
+			hd=$(git -C "$root" rev-parse --git-path hooks 2>/dev/null) || hd="$root/.git/hooks"
+			case $hd in /*) ;; *) hd="$root/$hd" ;; esac
+			mkdir -p "$hd"
+			cp "$k" "$hd/${k##*/}"
+			chmod +x "$hd/${k##*/}"
 			printf 'put back the %s hook that was here before\n' "${k##*/}"
 		done
 	fi

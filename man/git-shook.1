@@ -1,0 +1,124 @@
+.TH GIT-SHOOK 1 "2026-09-05" "git-shook 0.1.0" "Git Extensions"
+.SH NAME
+git-shook \- run several tools at one git hook event
+.SH SYNOPSIS
+.B git shook install
+.RB [ \-\-yes ]
+.br
+.B git shook list
+.br
+.B git shook doctor
+.br
+.B git shook uninstall
+.br
+.B git shook version
+.SH DESCRIPTION
+Git runs one program per hook event, so a tool that installs a hook replaces
+whatever was there, with nothing printed and nothing to notice.
+.B git-shook
+puts one dispatcher at the event and gives every tool a place to register beside
+the others.
+.PP
+A project declares what it wants run in a
+.IR shook.toml ,
+committed, anywhere in the tree.
+.B git shook install
+reads every tracked manifest, shows the argument list each one would run, and
+registers them once the operator agrees.
+.PP
+Nothing is installed until
+.B install
+is run, and manifests are read only then, never when a hook fires. A manifest
+arriving through a merge therefore does nothing until somebody looks at it.
+.SH COMMANDS
+.TP
+.B install " [\-\-yes]"
+Read every tracked manifest, print what each would run, and register it. With
+.B \-\-yes
+it does not ask, which is what a script wants and what a person should not use
+the first time.
+.TP
+.B list
+What is registered, per event, in the order it runs.
+.TP
+.B doctor
+Whether what the manifests declare and what is registered still agree. Exits
+non\-zero when they do not.
+.TP
+.B uninstall
+Remove the registry, clear
+.IR core.hooksPath ,
+and put back whatever hook was at the event before.
+.TP
+.B version
+Print the version.
+.SH THE MANIFEST
+.PP
+.EX
+name = "ante"
+
+[hooks.pre\-commit]
+run = ["ante", "fix"]
+.EE
+.PP
+.I run
+is an argument list rather than a command line. Nothing goes through a shell, so
+there is no quoting to get wrong and no way for an argument to become a second
+command. A hook needing a pipe or a redirect ships a script and names it, which
+puts the thing that actually runs in a file somebody can read in a diff.
+.PP
+Each hook runs with its own manifest's directory as the working directory.
+.I name
+decides the filename in the registry and therefore the order, which is sorted
+under the C collation; left out, the directory's name is used. A name carrying a
+path separator is refused, as is an event git does not have, and two manifests
+claiming one name at one event.
+.SH FILES
+.TP
+.I shook.toml
+A manifest. Any number of them, anywhere in the tree, and each must be tracked
+by git to be discovered.
+.TP
+.I .shook/hooks/
+Where
+.I core.hooksPath
+points. One dispatcher per event.
+.TP
+.I .shook/entries/<event>/<name>
+One registered entry. The first line is the working directory relative to the
+repository root, and every line after it is one argument.
+.TP
+.I .shook/kept/<event>
+Whatever hook was at the event before, still running as the first entry.
+.SH EXIT STATUS
+.TP
+.B 0
+Success. For
+.BR doctor ,
+everything declared is registered.
+.TP
+.B 1
+A manifest was refused, an operation failed, or
+.B doctor
+found a disagreement.
+.SH SECURITY
+Git will not read a hooks path out of the repository, deliberately: if it did,
+cloning a repository would execute whatever that repository said to execute. The
+activation therefore lives in
+.I .git/config
+and cannot be committed, and running
+.B git shook install
+is the consent a committed setting could never express.
+.PP
+For the same reason manifests are read during
+.B install
+and never when a hook fires.
+.SH LIMITATIONS
+An argument containing a newline cannot be represented, since an entry file is
+one argument per line, and such a manifest is refused rather than silently
+turned into two arguments.
+.SH SEE ALSO
+.BR githooks (5),
+.BR git-config (1)
+.SH AUTHOR
+orgrinrt <orgrinrt@ikiuni.dev>

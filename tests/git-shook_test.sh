@@ -320,6 +320,103 @@ doctor_is_quiet_once_everything_agrees() {
     rm -rf "$w"
 }
 
+#[test]
+a_name_that_would_escape_the_entry_directory_is_refused() {
+    # Measured before the check existed: `name = "../../escaped"` put a file at
+    # `.shook/escaped`, outside the entry directory entirely.
+    local w; w="$(a_repo)"
+    printf 'name = "../../escaped"\n\n[hooks.pre-commit]\nrun = ["true"]\n' > "$w/shook.toml"
+    commit_all "$w" init >/dev/null
+
+    assert_fails env -C "$w" "$SHOOK" install --yes
+    assert_fails test -e "$w/.shook/escaped"
+    rm -rf "$w"
+}
+
+#[test]
+a_name_with_a_slash_is_refused() {
+    local w; w="$(a_repo)"
+    printf 'name = "a/b"\n\n[hooks.pre-commit]\nrun = ["true"]\n' > "$w/shook.toml"
+    commit_all "$w" init >/dev/null
+
+    assert_fails env -C "$w" "$SHOOK" install --yes
+    rm -rf "$w"
+}
+
+#[test]
+an_event_git_does_not_have_is_refused() {
+    # doctor used to call such a manifest healthy, so nothing said the section
+    # would never run.
+    local w; w="$(a_repo)"
+    printf 'name = "alpha"\n\n[hooks.pre-commmit]\nrun = ["true"]\n' > "$w/shook.toml"
+    commit_all "$w" init >/dev/null
+
+    assert_fails env -C "$w" "$SHOOK" install --yes
+    rm -rf "$w"
+}
+
+#[test]
+two_manifests_claiming_one_name_at_one_event_are_refused() {
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" one same sh -c 'echo x'
+    a_manifest_at "$w" two same sh -c 'echo y'
+    commit_all "$w" init >/dev/null
+
+    assert_fails env -C "$w" "$SHOOK" install --yes
+    rm -rf "$w"
+}
+
+#[test]
+an_argument_that_would_carry_a_newline_is_refused() {
+    # The entry format is one argument per line, so a decoded \n would silently
+    # become two arguments.
+    local w; w="$(a_repo)"
+    printf 'name = "alpha"\n\n[hooks.pre-commit]\nrun = ["sh", "-c", "a\\nb"]\n' > "$w/shook.toml"
+    commit_all "$w" init >/dev/null
+
+    assert_fails env -C "$w" "$SHOOK" install --yes
+    rm -rf "$w"
+}
+
+#[test]
+a_kept_hook_that_is_not_shell_still_runs() {
+    # It was run through `sh` before, which turned a working python hook into a
+    # syntax error while the tool reported it had been kept.
+    local w; w="$(a_repo)"
+    mkdir -p "$w/.git/hooks"
+    printf '#!/usr/bin/env python3\nprint("PYTHON-HOOK-RAN")\n' > "$w/.git/hooks/pre-commit"
+    chmod +x "$w/.git/hooks/pre-commit"
+    a_manifest_at "$w" "" alpha sh -c 'echo x'
+    commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    printf 'x\n' > "$w/f.txt"
+    local out; out="$(commit_all "$w" second)"
+
+    assert_contains "$out" PYTHON-HOOK-RAN
+    rm -rf "$w"
+}
+
+#[test]
+the_dispatcher_works_in_a_bare_repository() {
+    # `rev-parse --show-toplevel` fails in a bare repository, so the dispatcher
+    # exited 0 there and every push hook a bare repository exists to run was
+    # silently inert.
+    local b; b="$(mktemp -d)"
+    git init -q --bare "$b"
+    mkdir -p "$b/.shook/entries/pre-receive"
+    printf '\n' > "$b/.shook/entries/pre-receive/aaa"
+    printf 'sh\n-c\necho BARE-RAN\n' >> "$b/.shook/entries/pre-receive/aaa"
+    mkdir -p "$b/.shook/hooks"
+    "$SHOOK" dispatcher > "$b/.shook/hooks/pre-receive"
+    chmod +x "$b/.shook/hooks/pre-receive"
+
+    local out; out="$(cd "$b" && ./.shook/hooks/pre-receive </dev/null 2>&1 || true)"
+
+    assert_contains "$out" BARE-RAN
+    rm -rf "$b"
+}
+
 # `test_run` sources this file once per test, so the run block guards against
 # starting a second suite inside the first.
 if [[ -z "${_SHOOK_TEST_RUNNING:-}" ]]; then
