@@ -1,0 +1,4 @@
+name = "git-shook"
+
+[hooks.pre-commit]
+run = ["./tests/git-shook_test.sh"]
