@@ -86,7 +86,7 @@ its own subtree filters the staged paths in whatever it runs.
 ## What it writes
 
 ```
-.shook/
+.git/shook/
   hooks/           core.hooksPath points here, one dispatcher per event
   entries/
     pre-commit/
@@ -95,9 +95,11 @@ its own subtree filters the staged paths in whatever it runs.
   kept/            whatever hook was at the event before, still running
 ```
 
-All of it is committed, so a clone arrives with the arrangement visible and
-reviewable. The one thing that is not committed, and cannot be, is the
-`core.hooksPath` line in `.git/config`.
+Inside the git directory, so none of it is committed and nobody has to ignore
+it. What a clone arrives with is the manifests; what it runs is generated from
+them by `git shook install`, beside the `core.hooksPath` line in `.git/config`
+that the same command writes. Which hooks somebody has beyond the ones the
+repository declares is their own business and stays in their own clone.
 
 ## Why you install it once per clone
 

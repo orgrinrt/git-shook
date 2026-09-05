@@ -56,7 +56,15 @@ ev=\${0##*/}
 root=\$(git rev-parse --show-toplevel 2>/dev/null) ||
 	root=\$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0
 
-d="\$root/.shook/entries/\$ev"
+# The entries live beside this script, in the git directory, and the shared one
+# rather than a linked worktree's, since one \`core.hooksPath\` serves them all.
+g=\$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
+case \$g in
+/*) ;;
+*) g="\$(pwd)/\$g" ;;
+esac
+
+d="\$g/shook/entries/\$ev"
 [ -d "\$d" ] || exit 0
 
 # Anything git handed us by a path relative to the current directory has to be
@@ -203,6 +211,28 @@ repo_root() {
 	git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository"
 }
 
+# Where the dispatcher, the entries and the kept hooks are generated.
+#
+# Inside the git directory, because a generated hook set is one clone's
+# activation rather than the repository's content. Nobody has to gitignore it,
+# nothing can commit it by accident, and which hooks somebody runs beyond what
+# the repository declares stays their own business. The tracked half is the
+# manifest; this half never was.
+#
+# `--git-common-dir` and not `--git-dir`, since a linked worktree has a git
+# directory of its own while `core.hooksPath` is one setting in the shared
+# config. Taking the worktree's would point every worktree's dispatcher at a
+# directory the one config never named.
+shook_dir() { # <root>
+	_d=$(git -C "$1" rev-parse --git-common-dir 2>/dev/null) ||
+		die "not inside a git repository"
+	case $_d in
+	/*) ;;
+	*) _d="$1/$_d" ;;
+	esac
+	printf '%s/shook' "$_d"
+}
+
 # Every manifest in the tree, one path per line. `git ls-files` rather than
 # `find`, so a manifest has to be tracked to be found: an untracked one is
 # somebody's scratch file and is not something to wire into a hook.
@@ -338,9 +368,11 @@ cmd_install() {
 	done
 	printf '\n'
 
+	sd=$(shook_dir "$root")
+
 	if [ "$yes" -eq 0 ]; then
 		[ -t 0 ] || die "not a terminal, so pass --yes to install without confirming"
-		printf 'Register these and point core.hooksPath at .shook/hooks? [y/N] '
+		printf 'Register these and point core.hooksPath at %s/hooks? [y/N] ' "$sd"
 		read -r reply
 		case $reply in
 		y | Y | yes | YES) ;;
@@ -348,16 +380,16 @@ cmd_install() {
 		esac
 	fi
 
-	mkdir -p "$root/.shook/hooks" "$root/.shook/entries"
+	mkdir -p "$sd/hooks" "$sd/entries"
 
 	# A hook that is already there is moved in beside the others rather than
 	# replaced, so it keeps running and uninstall can put it back.
 	migrate_existing "$root" "$events"
 
 	for ev in $events; do
-		mkdir -p "$root/.shook/entries/$ev"
-		dispatcher_text >"$root/.shook/hooks/$ev"
-		chmod +x "$root/.shook/hooks/$ev"
+		mkdir -p "$sd/entries/$ev"
+		dispatcher_text >"$sd/hooks/$ev"
+		chmod +x "$sd/hooks/$ev"
 	done
 
 	for m in $manifests; do
@@ -368,22 +400,39 @@ cmd_install() {
 			{
 				printf '%s\n' "$wd"
 				manifest_read argv "$root/$m" "$ev"
-			} >"$root/.shook/entries/$ev/$name"
+			} >"$sd/entries/$ev/$name"
 		done
 	done
 
-	git -C "$root" config core.hooksPath .shook/hooks
+	# Absolute, because the git directory is not always under the working tree:
+	# a linked worktree's `.git` is a file, a submodule's is elsewhere entirely,
+	# and git resolves a relative `core.hooksPath` against the working tree's
+	# top level. One shape for every case, and `git shook doctor` catches the one
+	# thing an absolute path costs, which is a clone that has since moved.
+	git -C "$root" config core.hooksPath "$sd/hooks"
 
-	printf 'Registered. core.hooksPath is .shook/hooks.\n'
-	printf 'The dispatcher and the entries are files in the repository; the config line is not,\n'
-	printf 'and cannot be, so everyone who clones this runs `git shook install` themselves.\n'
+	# An older git-shook generated at the repository root. Nothing reads it now
+	# and leaving it would put an untracked directory in everybody's status.
+	if [ -d "$root/.shook" ]; then
+		rm -rf "$root/.shook"
+		printf 'removed the old .shook at the repository root; it is in the git directory now\n'
+	fi
+
+	printf 'Registered. core.hooksPath is %s/hooks.\n' "$sd"
+	printf 'It is in the git directory, so it is not committed and nobody has to ignore it,\n'
+	printf 'and neither is the config line, so everyone who clones this runs `git shook install`.\n'
 }
 
 # An existing hook at an event we are about to take is moved to
-# `.shook/entries/<event>/00-existing` so it still runs, first, and uninstall
-# can put it back where it was.
+# `<git-dir>/shook/entries/<event>/00-existing` so it still runs, first, and
+# uninstall can put it back where it was.
 migrate_existing() { # <root> <events>
+	sd=$(shook_dir "$1")
 	old=$(git -C "$1" config --get core.hooksPath || true)
+	[ "$old" = "$sd/hooks" ] && return 0
+	# The path an older git-shook used. Its dispatcher is ours, so migrating
+	# from it would wrap this tool's own generated file as somebody's kept hook
+	# and run every entry twice.
 	[ "$old" = ".shook/hooks" ] && return 0
 
 	case $old in
@@ -406,17 +455,21 @@ migrate_existing() { # <root> <events>
 	for ev in $2; do
 		h="$from/$ev"
 		[ -f "$h" ] || continue
-		mkdir -p "$1/.shook/entries/$ev" "$1/.shook/kept"
-		cp "$h" "$1/.shook/kept/$ev"
-		chmod +x "$1/.shook/kept/$ev"
+		mkdir -p "$sd/entries/$ev" "$sd/kept"
+		cp "$h" "$sd/kept/$ev"
+		chmod +x "$sd/kept/$ev"
 		{
 			printf '\n'
 			# Run it directly rather than through `sh`. It carries its own
 			# shebang and it is as likely to be python or perl as shell, in
 			# which case `sh` turns a hook that worked into a syntax error
 			# while the tool reports it was kept.
-			printf '%s\n' ".shook/kept/$ev"
-		} >"$1/.shook/entries/$ev/00-existing"
+			#
+			# Absolute, for the same reason `core.hooksPath` is: the git
+			# directory is not reliably under the working tree, so a path
+			# relative to either is wrong somewhere.
+			printf '%s\n' "$sd/kept/$ev"
+		} >"$sd/entries/$ev/00-existing"
 		printf 'kept the %s hook that was already here, as 00-existing\n' "$ev"
 	done
 }
@@ -427,7 +480,8 @@ migrate_existing() { # <root> <events>
 
 cmd_list() {
 	root=$(repo_root)
-	d="$root/.shook/entries"
+	sd=$(shook_dir "$root")
+	d="$sd/entries"
 	if [ ! -d "$d" ]; then
 		printf 'nothing registered\n'
 		return 0
@@ -445,7 +499,7 @@ cmd_list() {
 	done
 	active=$(git -C "$root" config --get core.hooksPath || printf '(unset)')
 	printf '\ncore.hooksPath: %s\n' "$active"
-	[ "$active" = ".shook/hooks" ] || printf 'not active here: run `git shook install`\n'
+	[ "$active" = "$sd/hooks" ] || printf 'not active here: run `git shook install`\n'
 }
 
 # ---------------------------------------------------------------------------
@@ -454,33 +508,50 @@ cmd_list() {
 
 cmd_doctor() {
 	root=$(repo_root)
+	sd=$(shook_dir "$root")
 	bad=0
 
 	active=$(git -C "$root" config --get core.hooksPath || printf '')
-	if [ "$active" != ".shook/hooks" ]; then
+	if [ "$active" != "$sd/hooks" ]; then
 		printf 'core.hooksPath is "%s", so nothing here runs. Run `git shook install`.\n' "$active"
+		# The one thing an absolute hooksPath costs. Worth saying which of the
+		# two it is, because "run install" reads as a fresh setup rather than
+		# as a repair somebody already did once.
+		case $active in
+		/*)
+			[ -d "$active" ] ||
+				printf 'It points at a directory that is not there, so this clone has moved.\n'
+			;;
+		esac
 		bad=1
 	fi
 
 	for m in $(find_manifests "$root"); do
 		for ev in $(manifest_read events "$root/$m"); do
 			name=$(manifest_name "$root" "$m")
-			if [ ! -f "$root/.shook/entries/$ev/$name" ]; then
+			if [ ! -f "$sd/entries/$ev/$name" ]; then
 				printf '%s declares [hooks.%s] and is not registered. Run `git shook install`.\n' "$m" "$ev"
 				bad=1
 			fi
 		done
 	done
 
-	if [ -d "$root/.shook/entries" ]; then
-		for ev in "$root"/.shook/entries/*; do
+	if [ -d "$sd/entries" ]; then
+		for ev in "$sd"/entries/*; do
 			[ -d "$ev" ] || continue
-			e="$root/.shook/hooks/${ev##*/}"
+			e="$sd/hooks/${ev##*/}"
 			if [ ! -x "$e" ]; then
 				printf 'entries exist for %s with no dispatcher. Run `git shook install`.\n' "${ev##*/}"
 				bad=1
 			fi
 		done
+	fi
+
+	# An older git-shook generated at the repository root, where it showed up in
+	# everybody's `git status` and had to be ignored by hand. Install clears it.
+	if [ -d "$root/.shook" ]; then
+		printf 'a .shook directory is still at the repository root. Run `git shook install` to clear it.\n'
+		bad=1
 	fi
 
 	[ "$bad" -eq 0 ] && printf 'all good\n'
@@ -493,8 +564,9 @@ cmd_doctor() {
 
 cmd_uninstall() {
 	root=$(repo_root)
-	if [ -d "$root/.shook/kept" ]; then
-		for k in "$root"/.shook/kept/*; do
+	sd=$(shook_dir "$root")
+	if [ -d "$sd/kept" ]; then
+		for k in "$sd"/kept/*; do
 			[ -f "$k" ] || continue
 			# Same as the migration: ask git where hooks live rather than
 			# assuming `.git/hooks`, which is wrong in a linked worktree and
@@ -508,8 +580,10 @@ cmd_uninstall() {
 		done
 	fi
 	git -C "$root" config --unset core.hooksPath 2>/dev/null || true
+	rm -rf "$sd"
+	# And whatever an older git-shook left at the repository root.
 	rm -rf "$root/.shook"
-	printf 'removed .shook and cleared core.hooksPath\n'
+	printf 'removed %s and cleared core.hooksPath\n' "$sd"
 }
 
 # ---------------------------------------------------------------------------
