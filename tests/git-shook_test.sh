@@ -262,6 +262,88 @@ an_existing_hook_is_kept_and_still_runs() {
     rm -rf "$w"
 }
 
+# A tool that installed its own entrypoint and then declared the same command
+# in a manifest, which is what every tool moving onto git-shook looks like
+# mid-move. Writes one line per run so the count is the whole assertion.
+a_tool_that_counts_its_runs() { # <repo> <tally path> [hook command line]
+    printf '#!/bin/sh\nprintf "RAN\\n" >> %s\n' "$2" > "$1/tool"
+    chmod +x "$1/tool"
+    mkdir -p "$1/.git/hooks"
+    local body="${3:-exec $1/tool \"\$@\"}"
+    printf '#!/bin/sh\n# the tool writes this file\n%s\n' "$body" \
+        > "$1/.git/hooks/pre-commit"
+    chmod +x "$1/.git/hooks/pre-commit"
+}
+
+# How many times the tool ran on one ordinary commit, with a hook whose command
+# line is what was passed. The manifest declares the same command either way, so
+# what is measured is whether `declares_this_hook` recognised the file.
+_runs_for_a_hook_written_as() { # <hook command line>
+    local w; w="$(a_repo)"
+    local tally="$w/tally"
+    a_tool_that_counts_its_runs "$w" "$tally" "$(printf '%s' "$1" | sed "s|@REPO@|$w|g")"
+    a_manifest_at "$w" "" alpha "$w/tool"
+    commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    # The hook was live for the commit that landed the manifest, so the count
+    # starts here rather than at the top.
+    : > "$tally"
+    printf 'x\n' > "$w/f.txt"
+    commit_all "$w" second >/dev/null
+
+    wc -l < "$tally" | tr -d ' '
+    rm -rf "$w"
+}
+
+#[test]
+a_hook_running_only_what_a_manifest_declares_is_not_kept_as_well() {
+    # Keeping it registers the same command twice, as `00-existing` and from
+    # the manifest, so the tool runs twice per commit and neither half is
+    # wrong on its own. git-shook already refuses to wrap its own dispatcher
+    # for this reason; a declared tool's entrypoint is the same case.
+    local w; w="$(a_repo)"
+    local tally="$w/tally"
+    a_tool_that_counts_its_runs "$w" "$tally"
+    a_manifest_at "$w" "" alpha "$w/tool"
+    commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    # The hook was live for the commit that landed the manifest, so the count
+    # starts here rather than at the top.
+    : > "$tally"
+    printf 'x\n' > "$w/f.txt"
+    commit_all "$w" second >/dev/null
+
+    local n; n="$(wc -l < "$tally" | tr -d ' ')"
+    assert_eq "$n" 1
+    assert_fails test -f "$w/.git/shook/entries/pre-commit/00-existing"
+    rm -rf "$w"
+}
+
+#[test]
+a_hook_doing_anything_besides_the_declared_command_is_kept() {
+    # The boundary. One line of somebody's own beside the exec is enough to
+    # make the file theirs, and dropping it would lose work the tool never
+    # wrote and cannot give back.
+    local w; w="$(a_repo)"
+    local tally="$w/tally"
+    a_tool_that_counts_its_runs "$w" "$tally"
+    printf '#!/bin/sh\necho THEIRS-TOO\nexec %s/tool "$@"\n' "$w" \
+        > "$w/.git/hooks/pre-commit"
+    chmod +x "$w/.git/hooks/pre-commit"
+    a_manifest_at "$w" "" alpha "$w/tool"
+    commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    printf 'x\n' > "$w/f.txt"
+    local out; out="$(commit_all "$w" second)"
+
+    assert_contains "$out" THEIRS-TOO
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/00-existing"
+    rm -rf "$w"
+}
+
 #[test]
 uninstall_puts_the_old_hook_back() {
     local w; w="$(a_repo)"
@@ -625,3 +707,37 @@ if [[ -z "${_SHOOK_TEST_RUNNING:-}" ]]; then
     test_summary
     exit $?
 fi
+
+#[test]
+every_spelling_of_the_declared_command_is_recognised() {
+    # The comment above `declares_this_hook` states a law over five shapes: the
+    # declared command, optionally `exec`ed and optionally handed git's own
+    # arguments. One of the five had a test and the law was asserted at that
+    # one point, which says nothing about the other four and is exactly the
+    # sampling `the-test-gate.md` refuses.
+    #
+    # A tool writes whichever of these it happens to write, so a shape that
+    # slipped through would run twice per commit on somebody's machine and the
+    # suite would stay green.
+    local shape n
+    for shape in \
+        'exec @REPO@/tool "$@"' \
+        'exec @REPO@/tool' \
+        '@REPO@/tool "$@"' \
+        '@REPO@/tool' \
+        'exec @REPO@/tool $@'
+    do
+        n="$(_runs_for_a_hook_written_as "$shape")"
+        assert_eq "$n" 1
+    done
+}
+
+#[test]
+a_line_of_somebody_elses_beside_the_command_keeps_the_hook() {
+    # The boundary of the law above, driven through the same helper so the two
+    # are measured the same way. `set -e` is a line the tool did not write, so
+    # the file is somebody's own and dropping it would lose work.
+    local n; n="$(_runs_for_a_hook_written_as 'set -e
+exec @REPO@/tool "$@"')"
+    assert_eq "$n" 2
+}
