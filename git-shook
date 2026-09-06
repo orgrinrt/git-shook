@@ -453,6 +453,12 @@ cmd_install() {
 # as one argument and a hook has to quote it, so the two spellings differ and
 # there is no reading of the file that says which quoting produced it. Keeping
 # it is the safe way to be wrong.
+#
+# The comparison is over the argument list and not over where it runs, so a
+# manifest in a subdirectory declaring a relative command matches a hook at the
+# root that runs a different program of the same name. Narrow, since a hook
+# written by a tool names an absolute path, and worth knowing before somebody
+# widens what counts as a match.
 declares_this_hook() { # <root> <manifests> <event> <hook file>
 	for _m in $2; do
 		_argv=$(manifest_read argv "$1/$_m" "$3")
