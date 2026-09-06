@@ -413,9 +413,19 @@ cmd_install() {
 
 	# An older git-shook generated at the repository root. Nothing reads it now
 	# and leaving it would put an untracked directory in everybody's status.
+	#
+	# Unless git tracks it, in which case deleting it is not tidying up, it is
+	# a dirty tree that comes back on the next checkout and goes away again on
+	# the next install, forever. Somebody committed those files on purpose and
+	# this tool is not the one to decide they were wrong.
 	if [ -d "$root/.shook" ]; then
-		rm -rf "$root/.shook"
-		printf 'removed the old .shook at the repository root; it is in the git directory now\n'
+		if [ -n "$(git -C "$root" ls-files -- .shook)" ]; then
+			printf 'the .shook at the repository root is tracked, so it stays.\n'
+			printf 'Nothing reads it any more; remove it from the repository when you are ready.\n'
+		else
+			rm -rf "$root/.shook"
+			printf 'removed the old .shook at the repository root; it is in the git directory now\n'
+		fi
 	fi
 
 	printf 'Registered. core.hooksPath is %s/hooks.\n' "$sd"
@@ -432,8 +442,14 @@ migrate_existing() { # <root> <events>
 	[ "$old" = "$sd/hooks" ] && return 0
 	# The path an older git-shook used. Its dispatcher is ours, so migrating
 	# from it would wrap this tool's own generated file as somebody's kept hook
-	# and run every entry twice.
-	[ "$old" = ".shook/hooks" ] && return 0
+	# and run every entry twice. What does have to come across is the kept
+	# directory beside it: those are the hooks this tool took custody of the
+	# first time and promised `uninstall` would give back, and `install`
+	# removes the directory holding them a few lines later.
+	if [ "$old" = ".shook/hooks" ]; then
+		migrate_legacy_kept "$1"
+		return 0
+	fi
 
 	case $old in
 	# An absolute hooksPath is already a path and must not be joined to the
@@ -471,6 +487,31 @@ migrate_existing() { # <root> <events>
 			printf '%s\n' "$sd/kept/$ev"
 		} >"$sd/entries/$ev/00-existing"
 		printf 'kept the %s hook that was already here, as 00-existing\n' "$ev"
+	done
+}
+
+# The hooks an older git-shook kept, at `<root>/.shook/kept/<event>`, moved
+# into the git directory beside everything else.
+#
+# Every file there, rather than only the events being registered now: a
+# manifest that has since dropped an event still leaves that hook in the kept
+# directory, `uninstall` restores whatever it finds there without asking which
+# events are live, and `install` is about to delete the directory. Filtering by
+# the current event set would lose exactly the hook nobody is thinking about.
+migrate_legacy_kept() { # <root>
+	sd=$(shook_dir "$1")
+	[ -d "$1/.shook/kept" ] || return 0
+	for k in "$1"/.shook/kept/*; do
+		[ -f "$k" ] || continue
+		ev=${k##*/}
+		mkdir -p "$sd/entries/$ev" "$sd/kept"
+		cp "$k" "$sd/kept/$ev"
+		chmod +x "$sd/kept/$ev"
+		# The same two lines `migrate_existing` writes: an empty working
+		# directory, then the command, run directly so it keeps its own
+		# shebang.
+		printf '\n%s\n' "$sd/kept/$ev" >"$sd/entries/$ev/00-existing"
+		printf 'moved the %s hook the older layout was keeping\n' "$ev"
 	done
 }
 
@@ -548,9 +589,14 @@ cmd_doctor() {
 	fi
 
 	# An older git-shook generated at the repository root, where it showed up in
-	# everybody's `git status` and had to be ignored by hand. Install clears it.
+	# everybody's `git status` and had to be ignored by hand. Install clears it,
+	# unless somebody committed it, in which case only they can.
 	if [ -d "$root/.shook" ]; then
-		printf 'a .shook directory is still at the repository root. Run `git shook install` to clear it.\n'
+		if [ -n "$(git -C "$root" ls-files -- .shook)" ]; then
+			printf 'a .shook directory is tracked at the repository root. Nothing reads it; `git rm -r .shook`.\n'
+		else
+			printf 'a .shook directory is still at the repository root. Run `git shook install` to clear it.\n'
+		fi
 		bad=1
 	fi
 
@@ -581,8 +627,12 @@ cmd_uninstall() {
 	fi
 	git -C "$root" config --unset core.hooksPath 2>/dev/null || true
 	rm -rf "$sd"
-	# And whatever an older git-shook left at the repository root.
-	rm -rf "$root/.shook"
+	# And whatever an older git-shook left at the repository root, on the same
+	# terms `install` uses: a tracked one is somebody's committed file and not
+	# this tool's to delete.
+	if [ -d "$root/.shook" ] && [ -z "$(git -C "$root" ls-files -- .shook)" ]; then
+		rm -rf "$root/.shook"
+	fi
 	printf 'removed %s and cleared core.hooksPath\n' "$sd"
 }
 

@@ -527,6 +527,96 @@ a_linked_worktree_runs_the_same_entries() {
     rm -rf "$w"
 }
 
+# Everything the older layout put at the repository root: the dispatcher git
+# was pointed at, the entry for a registered tool, and the user`s own hook in
+# `kept/` where the tool promised `uninstall` would find it.
+a_root_layout_holding() { # <repo> <kept-hook-path>
+    local w="$1" kept="$2"
+    mkdir -p "$w/.shook/hooks" "$w/.shook/kept" "$w/.shook/entries/pre-commit"
+    cp "$kept" "$w/.shook/kept/pre-commit"
+    chmod +x "$w/.shook/kept/pre-commit"
+    printf '\n%s\n' "$w/.shook/kept/pre-commit" \
+        > "$w/.shook/entries/pre-commit/00-existing"
+    printf '#!/bin/sh\nexit 0\n' > "$w/.shook/hooks/pre-commit"
+    chmod +x "$w/.shook/hooks/pre-commit"
+    git -C "$w" config core.hooksPath .shook/hooks
+}
+
+#[test]
+an_upgrade_from_the_root_layout_keeps_the_hook_it_took_custody_of() {
+    # The one path where the move can lose something. The tool took the
+    # user`s hook out of `.git/hooks` the first time it ran and undertook to
+    # give it back; `install` then deletes the directory holding it, so it
+    # moves first or it is gone, and nothing about a green suite or a clean
+    # `doctor` would say so.
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" alpha sh -c 'echo ALPHA-RAN'
+    commit_all "$w" init >/dev/null
+
+    local own="$w/own-hook"
+    printf '#!/bin/sh\necho THE-USERS-OWN-HOOK\n' > "$own"
+    chmod +x "$own"
+    a_root_layout_holding "$w" "$own"
+
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    assert_ok test -x "$w/.git/shook/kept/pre-commit"
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/00-existing"
+
+    printf 'x\n' > "$w/f.txt"
+    local out; out="$(commit_all "$w" second)"
+    assert_contains "$out" THE-USERS-OWN-HOOK
+    assert_contains "$out" ALPHA-RAN
+    rm -rf "$w"
+}
+
+#[test]
+an_upgrade_moves_a_kept_hook_for_an_event_no_manifest_registers() {
+    # `uninstall` restores every file in `kept/` without asking which events
+    # are live, so filtering the move by the current event set would drop
+    # exactly the hook nobody is thinking about.
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" alpha sh -c 'echo ALPHA-RAN'
+    commit_all "$w" init >/dev/null
+
+    local own="$w/own-hook"
+    printf '#!/bin/sh\necho THE-USERS-OWN-HOOK\n' > "$own"
+    chmod +x "$own"
+    a_root_layout_holding "$w" "$own"
+    printf '#!/bin/sh\necho A-POST-MERGE-HOOK\n' > "$w/.shook/kept/post-merge"
+    chmod +x "$w/.shook/kept/post-merge"
+
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    assert_ok test -x "$w/.git/shook/kept/post-merge"
+    local out; out="$(cd "$w" && "$SHOOK" uninstall 2>&1)"
+    assert_contains "$out" "put back the post-merge hook"
+    rm -rf "$w"
+}
+
+#[test]
+a_tracked_shook_at_the_root_is_left_where_its_author_put_it() {
+    # A repository that commits `.shook/` gets a permanently dirty tree
+    # otherwise: checkout restores the files, install deletes them, forever.
+    # Nothing reads them any more and that is still not this tool`s call.
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" alpha true
+    mkdir -p "$w/.shook/entries/pre-commit"
+    printf '\ntrue\n' > "$w/.shook/entries/pre-commit/alpha"
+    commit_all "$w" init >/dev/null
+
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)"
+    assert_contains "$out" "is tracked, so it stays"
+    assert_ok test -f "$w/.shook/entries/pre-commit/alpha"
+    assert_eq "$(git -C "$w" status --porcelain)" ""
+
+    # And doctor says the thing only its author can do, rather than sending
+    # them back to the install that just declined.
+    local d; d="$(cd "$w" && "$SHOOK" doctor 2>&1 || true)"
+    assert_contains "$d" "git rm -r .shook"
+    rm -rf "$w"
+}
+
 # `test_run` sources this file once per test, so the run block guards against
 # starting a second suite inside the first.
 if [[ -z "${_SHOOK_TEST_RUNNING:-}" ]]; then
