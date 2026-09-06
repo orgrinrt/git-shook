@@ -79,16 +79,17 @@ claiming one name at one event.
 A manifest. Any number of them, anywhere in the tree, and each must be tracked
 by git to be discovered.
 .TP
-.I .shook/hooks/
+.I .git/shook/hooks/
 Where
 .I core.hooksPath
-points. One dispatcher per event.
+points. One dispatcher per event. Inside the git directory, so it is neither
+committed nor something anybody has to ignore.
 .TP
-.I .shook/entries/<event>/<name>
+.I .git/shook/entries/<event>/<name>
 One registered entry. The first line is the working directory relative to the
 repository root, and every line after it is one argument.
 .TP
-.I .shook/kept/<event>
+.I .git/shook/kept/<event>
 Whatever hook was at the event before, still running as the first entry.
 .SH EXIT STATUS
 .TP
