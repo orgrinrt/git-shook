@@ -95,6 +95,13 @@ its own subtree filters the staged paths in whatever it runs.
   kept/            whatever hook was at the event before, still running
 ```
 
+A hook that was already at the event is kept and runs first, except where it
+does nothing but run what a manifest declares at that same event. That is the
+entrypoint a tool wrote for itself before it moved onto a manifest, and keeping
+it would run the tool twice per event, so it is registered once from the
+manifest and left where it is. Anything doing more than that is somebody's own
+and is kept.
+
 Inside the git directory, so none of it is committed and nobody has to ignore
 it. What a clone arrives with is the manifests; what it runs is generated from
 them by `git shook install`, beside the `core.hooksPath` line in `.git/config`

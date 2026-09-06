@@ -90,7 +90,10 @@ One registered entry. The first line is the working directory relative to the
 repository root, and every line after it is one argument.
 .TP
 .I .git/shook/kept/<event>
-Whatever hook was at the event before, still running as the first entry.
+Whatever hook was at the event before, still running as the first entry. A hook
+that does nothing but run what a manifest declares at that same event is not
+kept, since it is the entrypoint a tool wrote before it moved onto a manifest
+and keeping it would run that tool twice.
 .SH EXIT STATUS
 .TP
 .B 0

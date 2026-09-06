@@ -384,7 +384,7 @@ cmd_install() {
 
 	# A hook that is already there is moved in beside the others rather than
 	# replaced, so it keeps running and uninstall can put it back.
-	migrate_existing "$root" "$events"
+	migrate_existing "$root" "$events" "$manifests"
 
 	for ev in $events; do
 		mkdir -p "$sd/entries/$ev"
@@ -433,10 +433,55 @@ cmd_install() {
 	printf 'and neither is the config line, so everyone who clones this runs `git shook install`.\n'
 }
 
+# Whether the hook already at an event does nothing but run what a manifest
+# declares at that same event.
+#
+# Keeping such a file registers the command twice, as `00-existing` and again
+# from the manifest, so a tool that installed its own entrypoint and then
+# declared it here runs twice per event and neither half of that is wrong on
+# its own. `migrate_existing` already refuses to wrap this tool's own
+# dispatcher for exactly that reason; a declared tool's entrypoint is the same
+# case one tool over.
+#
+# The shape it recognises is the shape a generated entrypoint has and nothing
+# else: a single command line that is the declared command, optionally `exec`ed
+# and optionally handed git's own arguments, with a shebang and comments around
+# it. One line of somebody's own beside it makes the file theirs and it is
+# kept, since dropping it would lose work no tool wrote and none can give back.
+#
+# An argument carrying whitespace is not matched either. The manifest holds it
+# as one argument and a hook has to quote it, so the two spellings differ and
+# there is no reading of the file that says which quoting produced it. Keeping
+# it is the safe way to be wrong.
+declares_this_hook() { # <root> <manifests> <event> <hook file>
+	for _m in $2; do
+		_argv=$(manifest_read argv "$1/$_m" "$3")
+		[ -n "$_argv" ] || continue
+		printf '%s\n' "$_argv" | grep -q '[[:space:]]' && continue
+		_cmd=$(printf '%s\n' "$_argv" | tr '\n' ' ')
+		_cmd=${_cmd% }
+		awk -v want="$_cmd" '
+			{
+				line = $0
+				sub(/^[ \t]+/, "", line)
+				sub(/[ \t]+$/, "", line)
+				if (line == "" || line ~ /^#/) next
+				n++
+				sub(/^exec[ \t]+/, "", line)
+				sub(/[ \t]+"\$@"$/, "", line)
+				sub(/[ \t]+\$@$/, "", line)
+				only = line
+			}
+			END { exit((n == 1 && only == want) ? 0 : 1) }
+		' "$4" && return 0
+	done
+	return 1
+}
+
 # An existing hook at an event we are about to take is moved to
 # `<git-dir>/shook/entries/<event>/00-existing` so it still runs, first, and
 # uninstall can put it back where it was.
-migrate_existing() { # <root> <events>
+migrate_existing() { # <root> <events> <manifests>
 	sd=$(shook_dir "$1")
 	old=$(git -C "$1" config --get core.hooksPath || true)
 	[ "$old" = "$sd/hooks" ] && return 0
@@ -471,6 +516,10 @@ migrate_existing() { # <root> <events>
 	for ev in $2; do
 		h="$from/$ev"
 		[ -f "$h" ] || continue
+		if declares_this_hook "$1" "$3" "$ev" "$h"; then
+			printf 'the %s hook already here runs what a manifest declares, so it is registered once rather than kept as well\n' "$ev"
+			continue
+		fi
 		mkdir -p "$sd/entries/$ev" "$sd/kept"
 		cp "$h" "$sd/kept/$ev"
 		chmod +x "$sd/kept/$ev"
