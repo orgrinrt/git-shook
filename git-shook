@@ -244,6 +244,16 @@ find_manifests() { # <root>
 	# and `install` is still the step that says yes to it.
 	_ld="$(shook_dir "$1")/manifests"
 	if [ -d "$_ld" ]; then
+		# The list is passed around as whitespace-separated words, which a path
+		# with whitespace in it would split, and the manifest would then register
+		# nothing while `install` reported success. Refuse it by name instead.
+		case $_ld in
+		*[[:space:]]*)
+			for _f in "$_ld"/*.toml; do
+				[ -f "$_f" ] && die "$_f: clone-local manifests cannot be read from a path containing whitespace; move the clone"
+			done
+			;;
+		esac
 		for _f in "$_ld"/*.toml; do
 			[ -f "$_f" ] && printf '%s\n' "$_f"
 		done
@@ -333,7 +343,11 @@ seen_name() { # <event> <name> <manifest>
 # `LOCALS` holds them.
 shadowed() { # <event> <name> <manifest>
 	case $3 in /*) return 1 ;; esac
-	case " $LOCALS " in *" $1/$2 "*) return 0 ;; esac
+	# By name, not by event: the local manifest replaces the tracked one whole,
+	# so an event only the tracked one declares stops registering with it. A
+	# replacement that left the rest of the old manifest running would be a
+	# merge, and the documentation promises a replacement.
+	case " $LOCALS " in *"/$2 "*) return 0 ;; esac
 	return 1
 }
 
@@ -447,13 +461,28 @@ cmd_install() {
 	# so a hook taken out of a manifest is not left behind in the registry.
 	# Only the names a manifest answers to are cleared; `00-existing` and any
 	# entry somebody placed by hand are not.
+	# A manifest that is gone entirely is cleared by the names recorded at the
+	# last install, since nothing current answers to its name any more.
+	current=""
 	for m in $manifests; do
 		name=$(manifest_name "$root" "$m")
 		check_name "$m" "$name"
+		current="$current $name"
 		for f in "$sd"/entries/*/"$name"; do
 			[ -f "$f" ] && rm -f "$f"
 		done
 	done
+	if [ -f "$sd/names" ]; then
+		while IFS= read -r old; do
+			[ -n "$old" ] || continue
+			case " $current " in *" $old "*) continue ;; esac
+			for f in "$sd"/entries/*/"$old"; do
+				[ -f "$f" ] && rm -f "$f"
+			done
+		done <"$sd/names"
+	fi
+	: >"$sd/names"
+	for name in $current; do printf '%s\n' "$name" >>"$sd/names"; done
 
 	for m in $manifests; do
 		name=$(manifest_name "$root" "$m")
@@ -748,7 +777,7 @@ cmd_uninstall() {
 	# The manifests a clone keeps in `manifests/` are declarations and not
 	# registry, and are whatever the operator or a tool put there, so they stay
 	# and the next `install` picks them up again.
-	rm -rf "$sd/hooks" "$sd/entries" "$sd/kept"
+	rm -rf "$sd/hooks" "$sd/entries" "$sd/kept" "$sd/names"
 	rmdir "$sd" 2>/dev/null || true
 	# And whatever an older git-shook left at the repository root, on the same
 	# terms `install` uses: a tracked one is somebody's committed file and not
@@ -756,7 +785,7 @@ cmd_uninstall() {
 	if [ -d "$root/.shook" ] && [ -z "$(git -C "$root" ls-files -- .shook)" ]; then
 		rm -rf "$root/.shook"
 	fi
-	printf 'removed %s and cleared core.hooksPath\n' "$sd"
+	printf 'removed the registry in %s and cleared core.hooksPath\n' "$sd"
 }
 
 # ---------------------------------------------------------------------------
@@ -797,7 +826,7 @@ arriving through a merge does nothing until you look at it and say yes.
 
 A declaration only this clone has goes in <git-dir>/shook/manifests/<name>.toml,
 in the same format. install reads it beside the tracked ones, it runs from the
-repository root, and it replaces a tracked manifest of the same name.
+repository root, and it replaces a tracked manifest of the same name as a whole.
 HELPTEXT
 }
 

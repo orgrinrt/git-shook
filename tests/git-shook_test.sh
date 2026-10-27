@@ -809,6 +809,64 @@ a_local_manifest_replaces_a_tracked_one_of_the_same_name() {
 }
 
 #[test]
+a_local_manifest_replaces_the_whole_tracked_one_not_only_the_events_it_names() {
+    # the tracked manifest declares two events and the local one of the same
+    # name only one: the other must stop registering, or it is a merge and not
+    # a replacement
+    local w; w="$(a_repo)"
+    printf '[hooks.pre-commit]\nrun = ["sh", "-c", "echo TRACKED-PRE"]\n\n[hooks.post-commit]\nrun = ["sh", "-c", "echo TRACKED-POST"]\n' > "$w/shook.toml"
+    printf 'name = "mine"\n' | cat - "$w/shook.toml" > "$w/shook.toml.new" && mv "$w/shook.toml.new" "$w/shook.toml"
+    git -C "$w" add shook.toml
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" mine pre-commit sh -c 'echo LOCAL-PRE'
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/mine"
+    assert_fails test -e "$w/.git/shook/entries/post-commit/mine"
+    printf 'y\n' > "$w/f.txt"
+    local out; out="$(commit_all "$w" second)"
+    assert_contains "$out" LOCAL-PRE
+    assert_not_contains "$out" TRACKED-POST
+    rm -rf "$w"
+}
+
+#[test]
+a_manifest_deleted_between_installs_stops_running() {
+    local w; w="$(a_repo)"
+    printf 'x\n' > "$w/f.txt"
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" mine pre-commit sh -c 'echo MINE-RAN'
+    a_local_manifest "$w" other post-merge true
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/post-merge/other"
+
+    rm "$w/.git/shook/manifests/other.toml"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_fails test -e "$w/.git/shook/entries/post-merge/other"
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/mine"
+    rm -rf "$w"
+}
+
+#[test]
+a_local_manifest_in_a_path_with_whitespace_is_refused_by_name() {
+    local base; base="$(mktemp -d)"
+    local w="$base/a clone"
+    mkdir "$w"
+    git -C "$w" init -q
+    git -C "$w" config user.email t@t
+    git -C "$w" config user.name t
+    printf 'x\n' > "$w/f.txt"
+    git -C "$w" add f.txt
+    git -C "$w" commit -q -m init
+    a_local_manifest "$w" mine pre-commit true
+
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1 || true)"
+    assert_contains "$out" "containing whitespace"
+    assert_fails test -e "$w/.git/shook/entries/pre-commit/mine"
+    rm -rf "$base"
+}
+
+#[test]
 a_local_manifest_under_another_name_runs_beside_a_tracked_one() {
     # the control for the replacement above: it is the name that decides, and
     # two manifests under different names both run
