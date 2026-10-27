@@ -1104,3 +1104,24 @@ a_kept_hook_that_runs_what_a_later_registered_manifest_declares_is_dropped() {
     assert_eq "$(printf '%s\n' "$out" | grep -c THEIRS-TOOL-RAN)" 1
     rm -rf "$w"
 }
+
+#[test]
+a_hook_running_what_a_replaced_manifest_declared_is_kept_and_not_dropped() {
+    # the tracked manifest is replaced by a local one of the same name that
+    # declares another event, so it registers nothing at pre-commit and the
+    # hook already there is the only thing that runs the tool
+    local w; w="$(a_repo)"
+    printf '#!/bin/sh\necho TOOL-RAN\n' > "$w/tool"
+    chmod +x "$w/tool"
+    a_manifest_at "$w" "" mine "$w/tool"
+    commit_all "$w" init >/dev/null
+    printf '#!/bin/sh\nexec %s "$@"\n' "$w/tool" > "$w/.git/hooks/pre-commit"
+    chmod +x "$w/.git/hooks/pre-commit"
+    a_local_manifest "$w" mine pre-push true
+
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/00-existing"
+    printf 'y\n' > "$w/f.txt"
+    assert_contains "$(commit_all "$w" second)" TOOL-RAN
+    rm -rf "$w"
+}

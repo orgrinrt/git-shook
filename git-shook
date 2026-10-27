@@ -650,6 +650,9 @@ EOF
 declares_this_hook() { # <root> <manifests> <event> <hook file>
 	while IFS= read -r _m; do
 		[ -n "$_m" ] || continue
+		# a tracked manifest a clone-local one has replaced registers nothing, so
+		# a hook running what it declares is not covered by it
+		shadowed "$3" "$(manifest_name "$1" "$_m")" "$_m" && continue
 		_argv=$(manifest_read argv "$(mf "$1" "$_m")" "$3")
 		[ -n "$_argv" ] || continue
 		printf '%s\n' "$_argv" | grep -q '[[:space:]]' && continue
