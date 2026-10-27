@@ -850,43 +850,6 @@ a_manifest_deleted_between_installs_stops_running() {
 }
 
 #[test]
-a_local_manifest_in_a_path_with_whitespace_is_refused_by_name() {
-    local base; base="$(mktemp -d)"
-    local w="$base/a clone"
-    mkdir "$w"
-    git -C "$w" init -q
-    git -C "$w" config user.email t@t
-    git -C "$w" config user.name t
-    a_manifest_at "$w" "" theirs true
-    commit_all "$w" init >/dev/null
-    a_local_manifest "$w" mine pre-commit true
-
-    # a tracked manifest is there, so the refusal is the whitespace and not the
-    # absence of anything to register, which is what the old message blamed
-    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)"
-    assert_contains "$out" "containing whitespace"
-    assert_not_contains "$out" "Registered"
-    assert_fails test -e "$w/.git/shook/entries/pre-commit/mine"
-    assert_fails bash -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
-    rm -rf "$base"
-}
-
-#[test]
-a_local_manifest_with_whitespace_in_its_file_name_is_refused_by_name() {
-    local w; w="$(a_repo)"
-    a_manifest_at "$w" "" theirs true
-    commit_all "$w" init >/dev/null
-    a_local_manifest "$w" mine pre-commit true
-    mv "$w/.git/shook/manifests/mine.toml" "$w/.git/shook/manifests/my hooks.toml"
-
-    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1 || true)"
-    assert_contains "$out" "containing whitespace"
-    assert_not_contains "$out" "Registered"
-    assert_fails test -e "$w/.git/shook/entries/pre-commit/theirs"
-    rm -rf "$w"
-}
-
-#[test]
 only_registers_the_manifest_it_names_and_leaves_a_merged_in_one_waiting() {
     local w; w="$(a_repo)"
     a_manifest_at "$w" "" theirs sh -c 'echo THEIRS-RAN'
@@ -1062,28 +1025,82 @@ an_entry_placed_by_hand_survives_a_install_once_the_names_are_recorded() {
     rm -rf "$w"
 }
 
+
 #[test]
-a_tracked_manifest_under_a_path_with_whitespace_is_refused_by_name() {
-    local w; w="$(a_repo)"
-    mkdir -p "$w/a b"
-    printf 'name = "spaced"\n\n[hooks.pre-commit]\nrun = ["true"]\n' > "$w/a b/shook.toml"
+a_clone_whose_path_has_whitespace_registers_and_runs_its_local_manifest() {
+    local base; base="$(mktemp -d)"
+    local w="$base/a clone"
+    mkdir "$w"
+    git -C "$w" init -q
+    git -C "$w" config user.email t@t
+    git -C "$w" config user.name t
+    a_manifest_at "$w" "" theirs sh -c 'echo THEIRS-RAN'
     commit_all "$w" init >/dev/null
-    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1 || true)"
-    assert_contains "$out" "whitespace or glob characters"
-    assert_not_contains "$out" "Registered"
-    assert_fails bash -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
+    a_local_manifest "$w" mine pre-commit sh -c 'echo MINE-RAN'
+
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/mine"
+    assert_ok bash -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
+    printf 'y\n' > "$w/f.txt"
+    local out; out="$(commit_all "$w" second)"
+    assert_contains "$out" MINE-RAN
+    assert_contains "$out" THEIRS-RAN
+    rm -rf "$base"
+}
+
+#[test]
+a_local_manifest_with_whitespace_or_glob_characters_in_its_file_name_registers() {
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" theirs true
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" spaced pre-commit sh -c 'echo SPACED-RAN'
+    mv "$w/.git/shook/manifests/spaced.toml" "$w/.git/shook/manifests/my hooks.toml"
+    a_local_manifest "$w" globbed pre-push true
+    mv "$w/.git/shook/manifests/globbed.toml" "$w/.git/shook/manifests/[ab].toml"
+    printf 'name = "a"\n\n[hooks.pre-push]\nrun = ["true"]\n' > "$w/.git/shook/manifests/a.toml"
+
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/spaced"
+    assert_ok test -f "$w/.git/shook/entries/pre-push/globbed"
+    assert_ok test -f "$w/.git/shook/entries/pre-push/a"
+    assert_ok bash -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
     rm -rf "$w"
 }
 
 #[test]
-a_local_manifest_with_glob_characters_in_its_name_is_refused_by_name() {
+a_tracked_manifest_under_a_path_with_whitespace_registers() {
     local w; w="$(a_repo)"
-    a_manifest_at "$w" "" theirs true
+    mkdir -p "$w/a b"
+    printf 'name = "spaced"\n\n[hooks.pre-commit]\nrun = ["sh", "-c", "echo SPACED-TRACKED-RAN"]\n' > "$w/a b/shook.toml"
     commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/spaced"
+    assert_ok bash -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
+    printf 'y\n' > "$w/f.txt"
+    assert_contains "$(commit_all "$w" second)" SPACED-TRACKED-RAN
+    rm -rf "$w"
+}
+
+#[test]
+a_kept_hook_that_runs_what_a_later_registered_manifest_declares_is_dropped() {
+    # `--only mine` keeps the old hook because `theirs`, which it runs, was not
+    # being registered; the plain install that registers `theirs` must not run
+    # the same tool twice
+    local w; w="$(a_repo)"
+    printf '#!/bin/sh\necho THEIRS-TOOL-RAN\n' > "$w/tool"
+    chmod +x "$w/tool"
+    a_manifest_at "$w" "" theirs "$w/tool"
+    commit_all "$w" init >/dev/null
+    printf '#!/bin/sh\nexec %s "$@"\n' "$w/tool" > "$w/.git/hooks/pre-commit"
+    chmod +x "$w/.git/hooks/pre-commit"
     a_local_manifest "$w" mine pre-commit true
-    mv "$w/.git/shook/manifests/mine.toml" "$w/.git/shook/manifests/[ab].toml"
-    printf 'name = "a"\n\n[hooks.pre-push]\nrun = ["true"]\n' > "$w/.git/shook/manifests/a.toml"
-    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1 || true)"
-    assert_contains "$out" "glob characters"
+
+    ( cd "$w" && "$SHOOK" install --yes --only mine >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/00-existing"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_fails test -e "$w/.git/shook/entries/pre-commit/00-existing"
+    printf 'y\n' > "$w/f.txt"
+    local out; out="$(commit_all "$w" second)"
+    assert_eq "$(printf '%s\n' "$out" | grep -c THEIRS-TOOL-RAN)" 1
     rm -rf "$w"
 }

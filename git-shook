@@ -236,31 +236,9 @@ shook_dir() { # <root>
 # Every manifest in the tree, one path per line. `git ls-files` rather than
 # `find`, so a manifest has to be tracked to be found: an untracked one is
 # somebody's scratch file and is not something to wire into a hook.
-# The list of manifests is passed around as whitespace-separated words, which a
-# path with whitespace in it would split: the manifest would then register
-# nothing while `install` reported success. So a clone-local manifest whose path
-# or file name carries whitespace is refused by name. This runs at the top level
-# of the command and not inside `find_manifests`, which is called in a command
-# substitution where `die` ends only the substitution and the command goes on.
-refuse_odd_manifest_paths() { # <root>
-	_ld="$(shook_dir "$1")/manifests"
-	if [ -d "$_ld" ]; then
-		for _f in "$_ld"/*.toml; do
-			[ -f "$_f" ] || continue
-			case $_f in
-			*[[:space:]]*) die "$_f: clone-local manifests cannot be read from a path or under a name containing whitespace; move the clone or rename the file" ;;
-			esac
-			case ${_f##*/} in
-			*[*?[]*) die "$_f: a manifest file name cannot contain glob characters, which the manifest list would expand; rename the file" ;;
-			esac
-		done
-	fi
-	# The tracked ones go through the same word list, so the same two characters
-	# that split or expand it are refused there by name too.
-	_bad=$(git -C "$1" ls-files --full-name -- 'shook.toml' '*/shook.toml' 2>/dev/null | grep -m1 '[[:space:]*?[]') || true
-	[ -z "$_bad" ] || die "$_bad: a tracked manifest cannot sit under a path containing whitespace or glob characters, which the manifest list would split or expand; rename the directory"
-}
-
+# The list is handed around one path to a line and read with `read -r` from a
+# here-document, never as words, so a path with whitespace or glob characters is
+# one manifest and is neither split nor expanded.
 find_manifests() { # <root>
 	# The clone's own manifests come first, as absolute paths, so they win a
 	# name a tracked manifest also uses. They sit in the git directory beside
@@ -385,14 +363,17 @@ manifest_dir() { # <relative manifest path>
 # Every event any manifest declares, once each, in the order first seen.
 collect_events() { # <root> <manifests>
 	evs=""
-	for m in $2; do
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
 		for ev in $(manifest_read events "$(mf "$1" "$m")"); do
 			case " $evs " in
 			*" $ev "*) ;;
 			*) evs="$evs $ev" ;;
 			esac
 		done
-	done
+	done <<EOF
+$2
+EOF
 	printf '%s' "$evs"
 }
 
@@ -425,16 +406,18 @@ cmd_install() {
 	done
 
 	root=$(repo_root)
-	refuse_odd_manifest_paths "$root"
 	manifests=$(find_manifests "$root")
 	[ -n "$manifests" ] || die "no tracked shook.toml anywhere in $root, and none in $(shook_dir "$root")/manifests"
 
 	# A clone-local manifest replaces a tracked one of its name as a whole, even
 	# one that declares no event, so the names are noted before anything is
 	# planned and not as each event is read.
-	for m in $manifests; do
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
 		case $m in /*) LOCALS="$LOCALS none/$(manifest_name "$root" "$m")" ;; esac
-	done
+	done <<EOF
+$manifests
+EOF
 
 	# `--only` registers the named manifests and leaves every other one
 	# unregistered: `install --yes` is the consent for what the caller named,
@@ -452,11 +435,14 @@ cmd_install() {
 	done
 	if [ -n "$only" ]; then
 		kept=""
-		for m in $manifests; do
+		while IFS= read -r m; do
+			[ -n "$m" ] || continue
 			n=$(manifest_name "$root" "$m")
 			case " $only " in *" $n "*) kept="$kept
 $m" ;; esac
-		done
+		done <<EOF
+$manifests
+EOF
 		[ -n "$kept" ] || die "no manifest answers to:$only"
 		manifests=$(printf '%s\n' "$kept" | sed '/^$/d')
 	fi
@@ -467,7 +453,8 @@ $m" ;; esac
 	# plan silently loses an empty working directory and shifts everything
 	# after it. Reading the manifests twice costs nothing and cannot do that.
 	printf 'git-shook will register:\n\n'
-	for m in $manifests; do
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
 		name=$(manifest_name "$root" "$m")
 		check_name "$m" "$name"
 		wd=$(manifest_dir "$m")
@@ -484,7 +471,9 @@ $m" ;; esac
 			[ -n "$wd" ] && printf ' (in %s)' "$wd"
 			printf '\n'
 		done
-	done
+	done <<EOF
+$manifests
+EOF
 	printf '\n'
 
 	sd=$(shook_dir "$root")
@@ -505,6 +494,18 @@ $m" ;; esac
 	# replaced, so it keeps running and uninstall can put it back.
 	migrate_existing "$root" "$all_events" "$manifests"
 
+	# A hook kept by an earlier install that runs what a manifest registered
+	# now declares would run it twice beside that entry. An install with
+	# `--only` keeps it, because the manifest that declares it was not being
+	# registered; a later one that does register that manifest drops it.
+	for ev in $all_events; do
+		[ -f "$sd/kept/$ev" ] && [ -f "$sd/entries/$ev/00-existing" ] || continue
+		if declares_this_hook "$root" "$manifests" "$ev" "$sd/kept/$ev"; then
+			rm -f "$sd/kept/$ev" "$sd/entries/$ev/00-existing"
+			printf 'dropped the kept %s hook, which runs what a manifest registers now\n' "$ev"
+		fi
+	done
+
 	for ev in $all_events; do
 		mkdir -p "$sd/entries/$ev"
 		dispatcher_text >"$sd/hooks/$ev"
@@ -520,14 +521,17 @@ $m" ;; esac
 	# A manifest that is gone entirely is cleared by the names recorded at the
 	# last install, since nothing current answers to its name any more.
 	current=""
-	for m in $manifests; do
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
 		name=$(manifest_name "$root" "$m")
 		check_name "$m" "$name"
 		current="$current $name"
 		for f in "$sd"/entries/*/"$name"; do
 			[ -f "$f" ] && rm -f "$f"
 		done
-	done
+	done <<EOF
+$manifests
+EOF
 	if [ -f "$sd/names" ] && [ -z "$only" ]; then
 		while IFS= read -r old; do
 			[ -n "$old" ] || continue
@@ -572,7 +576,8 @@ $m" ;; esac
 		for name in $current; do printf '%s\n' "$name" >>"$sd/names"; done
 	fi
 
-	for m in $manifests; do
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
 		name=$(manifest_name "$root" "$m")
 		check_name "$m" "$name"
 		wd=$(manifest_dir "$m")
@@ -583,7 +588,9 @@ $m" ;; esac
 				manifest_read argv "$(mf "$root" "$m")" "$ev"
 			} >"$sd/entries/$ev/$name"
 		done
-	done
+	done <<EOF
+$manifests
+EOF
 
 	# Absolute, because the git directory is not always under the working tree:
 	# a linked worktree's `.git` is a file, a submodule's is elsewhere entirely,
@@ -641,7 +648,8 @@ $m" ;; esac
 # written by a tool names an absolute path, and worth knowing before somebody
 # widens what counts as a match.
 declares_this_hook() { # <root> <manifests> <event> <hook file>
-	for _m in $2; do
+	while IFS= read -r _m; do
+		[ -n "$_m" ] || continue
 		_argv=$(manifest_read argv "$(mf "$1" "$_m")" "$3")
 		[ -n "$_argv" ] || continue
 		printf '%s\n' "$_argv" | grep -q '[[:space:]]' && continue
@@ -661,7 +669,9 @@ declares_this_hook() { # <root> <manifests> <event> <hook file>
 			}
 			END { exit((n == 1 && only == want) ? 0 : 1) }
 		' "$4" && return 0
-	done
+	done <<EOF
+$2
+EOF
 	return 1
 }
 
@@ -803,14 +813,17 @@ cmd_doctor() {
 		bad=1
 	fi
 
-	refuse_odd_manifest_paths "$root"
 	manifests=$(find_manifests "$root")
 	# A clone-local manifest replaces a tracked one of its name whole, so what
 	# the tracked one declares is not owed an entry.
-	for m in $manifests; do
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
 		case $m in /*) LOCALS="$LOCALS none/$(manifest_name "$root" "$m")" ;; esac
-	done
-	for m in $manifests; do
+	done <<EOF
+$manifests
+EOF
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
 		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
 			name=$(manifest_name "$root" "$m")
 			shadowed "$ev" "$name" "$m" && continue
@@ -819,7 +832,9 @@ cmd_doctor() {
 				bad=1
 			fi
 		done
-	done
+	done <<EOF
+$manifests
+EOF
 
 	if [ -d "$sd/entries" ]; then
 		for ev in "$sd"/entries/*; do

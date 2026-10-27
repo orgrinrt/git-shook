@@ -100,10 +100,9 @@ repository does not track, a layer of local configuration for instance, and want
 it to reach the same dispatcher as everything else. Where a local manifest and a
 tracked one share a `name`, the local one is what registers in its entirety, so an event only the tracked
 one declares is not registered, and the plan says so. A clone whose path contains
-whitespace cannot hold local manifests, a local manifest file name with glob
-characters is refused, and so is a tracked manifest under a path with either,
-because the list of manifests is passed around as words; `install` and `doctor`
-say which and stop.
+whitespace holds local manifests like any other, and so does a manifest whose
+file name or directory carries whitespace or glob characters: the list is read a
+path to a line and never split into words.
 
 `install --yes --only <name>` registers only the manifests of that name (repeat
 the flag for more) and leaves every other one as it was, unregistered or not. A
