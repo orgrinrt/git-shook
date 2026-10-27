@@ -504,6 +504,18 @@ EOF
 	# replaced, so it keeps running and uninstall can put it back.
 	migrate_existing "$root" "$all_events" "$manifests"
 
+	# Whatever hook sits in git's own hooks directory and does nothing but run
+	# what a manifest registers is run by its entry, and a tool that chains to
+	# that directory afterwards (mockspace's gate) must be able to tell. It is
+	# not always what `migrate_existing` looked at, which reads the directory
+	# `core.hooksPath` named before.
+	for ev in $all_events; do
+		h="$sd/../hooks/$ev"
+		[ -f "$h" ] && [ ! -f "$sd/declined/$ev" ] || continue
+		declares_this_hook "$root" "$manifests" "$ev" "$h" || continue
+		note_declined "$sd" "$ev" "$h"
+	done
+
 	# A hook kept by an earlier install that runs what a manifest registered
 	# now declares would run it twice beside that entry. An install with
 	# `--only` keeps it, because the manifest that declares it was not being
@@ -911,6 +923,9 @@ EOF
 				[ -f "$f" ] || continue
 				n=${f##*/}
 				[ "$n" = 00-existing ] && continue
+				# only what the last install recorded: an entry placed by hand is the
+				# operator's and a full install leaves it alone
+				grep -qx -- "$n" "$sd/names" 2>/dev/null || continue
 				case "$declared" in *" ${ev##*/}/$n "*) continue ;; esac
 				printf 'the %s entry of %s is declared by no manifest. Run `git shook install` without --only to remove it.\n' "$n" "${ev##*/}"
 				bad=1

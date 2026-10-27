@@ -1218,3 +1218,37 @@ a_hand_placed_entry_a_full_install_removes_is_said_to_be() {
     assert_contains "$out" "removed the zz-mine entry"
     rm -rf "$w"
 }
+
+#[test]
+a_hook_in_gits_own_directory_is_declined_even_when_another_tool_held_the_key() {
+    # the old `core.hooksPath` is a gate that ends in `.git/hooks/pre-commit`,
+    # which runs the tool a manifest also registers; the gate is kept as
+    # `00-existing`, and without a record for `.git/hooks` it would chain to the
+    # tool a second time
+    local w; w="$(a_repo)"
+    printf '#!/bin/sh\necho TOOL-RAN\n' > "$w/tool"
+    chmod +x "$w/tool"
+    mkdir -p "$w/gate"
+    printf '#!/bin/sh\n[ -x "%s/.git/hooks/pre-commit" ] && exec "%s/.git/hooks/pre-commit" "$@"\n' "$w" "$w" > "$w/gate/pre-commit"
+    chmod +x "$w/gate/pre-commit"
+    printf '#!/bin/sh\nexec %s "$@"\n' "$w/tool" > "$w/.git/hooks/pre-commit"
+    chmod +x "$w/.git/hooks/pre-commit"
+    git -C "$w" config core.hooksPath "$w/gate"
+    a_local_manifest "$w" mine pre-commit "$w/tool"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok cmp -s "$w/.git/hooks/pre-commit" "$w/.git/shook/declined/pre-commit"
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/00-existing"
+    rm -rf "$w"
+}
+
+#[test]
+doctor_leaves_an_entry_placed_by_hand_alone() {
+    local w; w="$(a_repo)"
+    a_local_manifest "$w" mine pre-push true
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    printf '.\ntrue\n' > "$w/.git/shook/entries/pre-push/zz-mine"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-push/zz-mine"
+    assert_ok sh -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
+    rm -rf "$w"
+}
