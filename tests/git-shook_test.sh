@@ -855,15 +855,69 @@ a_local_manifest_in_a_path_with_whitespace_is_refused_by_name() {
     git -C "$w" init -q
     git -C "$w" config user.email t@t
     git -C "$w" config user.name t
-    printf 'x\n' > "$w/f.txt"
-    git -C "$w" add f.txt
-    git -C "$w" commit -q -m init
+    a_manifest_at "$w" "" theirs true
+    commit_all "$w" init >/dev/null
     a_local_manifest "$w" mine pre-commit true
+
+    # a tracked manifest is there, so the refusal is the whitespace and not the
+    # absence of anything to register, which is what the old message blamed
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)"
+    local st=$?
+    assert_contains "$out" "containing whitespace"
+    assert_not_contains "$out" "Registered"
+    assert_fails test -e "$w/.git/shook/entries/pre-commit/mine"
+    assert_fails bash -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
+    rm -rf "$base"
+}
+
+#[test]
+a_local_manifest_with_whitespace_in_its_file_name_is_refused_by_name() {
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" theirs true
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" mine pre-commit true
+    mv "$w/.git/shook/manifests/mine.toml" "$w/.git/shook/manifests/my hooks.toml"
 
     local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1 || true)"
     assert_contains "$out" "containing whitespace"
+    assert_not_contains "$out" "Registered"
+    assert_fails test -e "$w/.git/shook/entries/pre-commit/theirs"
+    rm -rf "$w"
+}
+
+#[test]
+only_registers_the_manifest_it_names_and_leaves_a_merged_in_one_waiting() {
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" theirs sh -c 'echo THEIRS-RAN'
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" mine pre-commit sh -c 'echo MINE-RAN'
+
+    ( cd "$w" && "$SHOOK" install --yes --only mine >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/mine"
+    assert_fails test -e "$w/.git/shook/entries/pre-commit/theirs"
+    printf 'y\n' > "$w/f.txt"
+    local out; out="$(commit_all "$w" second)"
+    assert_contains "$out" MINE-RAN
+    assert_not_contains "$out" THEIRS-RAN
+    # the control: without the flag the other one registers too
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/theirs"
+    # and a name nothing answers to is refused
+    assert_fails bash -c "cd '$w' && '$SHOOK' install --yes --only nothing-by-that-name >/dev/null 2>&1"
+    rm -rf "$w"
+}
+
+#[test]
+a_local_manifest_declaring_no_event_still_replaces_the_tracked_one_of_its_name() {
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" mine sh -c 'echo TRACKED-RAN'
+    commit_all "$w" init >/dev/null
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "mine"\n' > "$w/.git/shook/manifests/mine.toml"
+
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null 2>&1 || true )
     assert_fails test -e "$w/.git/shook/entries/pre-commit/mine"
-    rm -rf "$base"
+    rm -rf "$w"
 }
 
 #[test]

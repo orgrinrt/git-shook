@@ -43,7 +43,11 @@ leaves that directory in place.
 Read every tracked manifest, print what each would run, and register it. With
 .B \-\-yes
 it does not ask, which is what a script wants and what a person should not use
-the first time.
+the first time. With
+.BI \-\-only " name"
+(repeatable) only the manifests of that name are registered and pruned; every
+other manifest stays as it was, registered or not, so a tool registering its own
+declaration does not also say yes to one that arrived through a merge.
 .TP
 .B list
 What is registered, per event, in the order it runs.

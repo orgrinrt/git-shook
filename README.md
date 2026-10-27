@@ -102,6 +102,12 @@ tracked one share a `name`, the local one is what registers in its entirety, so 
 one declares is not registered, and the plan says so. A clone whose path contains
 whitespace cannot hold local manifests, and `install` says that and stops.
 
+`install --yes --only <name>` registers only the manifests of that name (repeat
+the flag for more) and leaves every other one as it was, unregistered or not. A
+tool that generates its own declaration passes its own name, so its `--yes` is
+the consent for what it wrote and a tracked manifest that arrived through a merge
+still waits to be looked at.
+
 An entry a manifest no longer declares stops running on the next `install`, which
 clears the names the manifests answer to, and the names the last install recorded
 that nothing answers to now, before it writes them again. `uninstall`

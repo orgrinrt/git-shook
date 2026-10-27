@@ -236,6 +236,23 @@ shook_dir() { # <root>
 # Every manifest in the tree, one path per line. `git ls-files` rather than
 # `find`, so a manifest has to be tracked to be found: an untracked one is
 # somebody's scratch file and is not something to wire into a hook.
+# The list of manifests is passed around as whitespace-separated words, which a
+# path with whitespace in it would split: the manifest would then register
+# nothing while `install` reported success. So a clone-local manifest whose path
+# or file name carries whitespace is refused by name. This runs at the top level
+# of the command and not inside `find_manifests`, which is called in a command
+# substitution where `die` ends only the substitution and the command goes on.
+refuse_odd_manifest_paths() { # <root>
+	_ld="$(shook_dir "$1")/manifests"
+	[ -d "$_ld" ] || return 0
+	for _f in "$_ld"/*.toml; do
+		[ -f "$_f" ] || continue
+		case $_f in
+		*[[:space:]]*) die "$_f: clone-local manifests cannot be read from a path or under a name containing whitespace; move the clone or rename the file" ;;
+		esac
+	done
+}
+
 find_manifests() { # <root>
 	# The clone's own manifests come first, as absolute paths, so they win a
 	# name a tracked manifest also uses. They sit in the git directory beside
@@ -244,16 +261,6 @@ find_manifests() { # <root>
 	# and `install` is still the step that says yes to it.
 	_ld="$(shook_dir "$1")/manifests"
 	if [ -d "$_ld" ]; then
-		# The list is passed around as whitespace-separated words, which a path
-		# with whitespace in it would split, and the manifest would then register
-		# nothing while `install` reported success. Refuse it by name instead.
-		case $_ld in
-		*[[:space:]]*)
-			for _f in "$_ld"/*.toml; do
-				[ -f "$_f" ] && die "$_f: clone-local manifests cannot be read from a path containing whitespace; move the clone"
-			done
-			;;
-		esac
 		for _f in "$_ld"/*.toml; do
 			[ -f "$_f" ] && printf '%s\n' "$_f"
 		done
@@ -394,16 +401,47 @@ show_argv() { # <newline separated argv>
 
 cmd_install() {
 	yes=0
-	for a in "$@"; do
-		case $a in
+	only=""
+	while [ $# -gt 0 ]; do
+		case $1 in
 		-y | --yes) yes=1 ;;
-		-*) die "unknown flag: $a" ;;
+		--only)
+			[ $# -ge 2 ] || die "--only takes a manifest name"
+			check_name "--only" "$2"
+			only="$only $2"
+			shift
+			;;
+		-*) die "unknown flag: $1" ;;
 		esac
+		shift
 	done
 
 	root=$(repo_root)
+	refuse_odd_manifest_paths "$root"
 	manifests=$(find_manifests "$root")
 	[ -n "$manifests" ] || die "no tracked shook.toml anywhere in $root, and none in $(shook_dir "$root")/manifests"
+
+	# A clone-local manifest replaces a tracked one of its name as a whole, even
+	# one that declares no event, so the names are noted before anything is
+	# planned and not as each event is read.
+	for m in $manifests; do
+		case $m in /*) LOCALS="$LOCALS none/$(manifest_name "$root" "$m")" ;; esac
+	done
+
+	# `--only` registers the named manifests and leaves every other one
+	# unregistered: `install --yes` is the consent for what the caller named,
+	# and a manifest that arrived through a merge is still waiting to be looked
+	# at. The registry entries of the others are neither written nor pruned.
+	if [ -n "$only" ]; then
+		kept=""
+		for m in $manifests; do
+			n=$(manifest_name "$root" "$m")
+			case " $only " in *" $n "*) kept="$kept
+$m" ;; esac
+		done
+		[ -n "$kept" ] || die "no manifest answers to:$only"
+		manifests=$(printf '%s\n' "$kept" | sed '/^$/d')
+	fi
 
 	# Two passes over the manifests rather than one pass into a plan file. The
 	# encoding that would need is a field separator that survives an empty
@@ -472,7 +510,7 @@ cmd_install() {
 			[ -f "$f" ] && rm -f "$f"
 		done
 	done
-	if [ -f "$sd/names" ]; then
+	if [ -f "$sd/names" ] && [ -z "$only" ]; then
 		while IFS= read -r old; do
 			[ -n "$old" ] || continue
 			case " $current " in *" $old "*) continue ;; esac
@@ -481,8 +519,16 @@ cmd_install() {
 			done
 		done <"$sd/names"
 	fi
-	: >"$sd/names"
-	for name in $current; do printf '%s\n' "$name" >>"$sd/names"; done
+	# Under `--only` the names already recorded stay, since the manifests that
+	# own them were not looked at.
+	if [ -n "$only" ]; then
+		for name in $current; do
+			grep -qx -- "$name" "$sd/names" 2>/dev/null || printf '%s\n' "$name" >>"$sd/names"
+		done
+	else
+		: >"$sd/names"
+		for name in $current; do printf '%s\n' "$name" >>"$sd/names"; done
+	fi
 
 	for m in $manifests; do
 		name=$(manifest_name "$root" "$m")
@@ -715,6 +761,7 @@ cmd_doctor() {
 		bad=1
 	fi
 
+	refuse_odd_manifest_paths "$root"
 	for m in $(find_manifests "$root"); do
 		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
 			name=$(manifest_name "$root" "$m")
@@ -802,8 +849,11 @@ USAGE
     git shook <command>
 
 COMMANDS
-    install [--yes]   Read every tracked shook.toml, show what each would run,
-                      and register it once you say so.
+    install [--yes] [--only <name>]
+                      Read every tracked shook.toml, show what each would run,
+                      and register it once you say so. --only registers the
+                      manifests of that name and leaves the others as they
+                      were, which is what a tool registering its own wants.
     list              What is registered, per event, in the order it runs.
     doctor            Whether what is declared and what is registered agree.
     uninstall         Remove the registry and put back the hook that was here.
