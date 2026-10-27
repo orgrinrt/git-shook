@@ -28,7 +28,9 @@ _git-shook() {
 	args)
 		case $words[1] in
 		install)
-			_arguments '(-y --yes)'{-y,--yes}'[do not ask before registering]'
+			_arguments \
+				'(-y --yes)'{-y,--yes}'[do not ask before registering]' \
+				'*--only[register only the manifest of this name]:manifest name:'
 			;;
 		esac
 		;;

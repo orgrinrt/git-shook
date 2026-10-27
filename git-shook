@@ -236,18 +236,46 @@ shook_dir() { # <root>
 # Every manifest in the tree, one path per line. `git ls-files` rather than
 # `find`, so a manifest has to be tracked to be found: an untracked one is
 # somebody's scratch file and is not something to wire into a hook.
+# The list is handed around one path to a line and read with `read -r` from a
+# here-document, never as words, so a path with whitespace or glob characters is
+# one manifest and is neither split nor expanded.
 find_manifests() { # <root>
+	# The clone's own manifests come first, as absolute paths, so they win a
+	# name a tracked manifest also uses. They sit in the git directory beside
+	# the registry they feed, which makes them local to this clone and not
+	# something a merge can bring in: whoever put one there is the operator,
+	# and `install` is still the step that says yes to it.
+	_ld="$(shook_dir "$1")/manifests"
+	if [ -d "$_ld" ]; then
+		for _f in "$_ld"/*.toml; do
+			[ -f "$_f" ] && printf '%s\n' "$_f"
+		done
+	fi
 	git -C "$1" ls-files --full-name -- 'shook.toml' '*/shook.toml' 2>/dev/null | sort
+}
+
+# The file a manifest path names: a clone-local one is already absolute, a
+# tracked one is relative to the repository root.
+mf() { # <root> <manifest path>
+	case $2 in
+	/*) printf '%s' "$2" ;;
+	*) printf '%s/%s' "$1" "$2" ;;
+	esac
 }
 
 # The name a manifest registers under, which decides its filename in the entry
 # directory and therefore where it falls in the run order.
 manifest_name() { # <root> <relative manifest path>
-	n=$(manifest_read name "$1/$2")
+	n=$(manifest_read name "$(mf "$1" "$2")")
 	if [ -z "$n" ]; then
-		n=$(dirname "$2")
-		[ "$n" = "." ] && n=$(basename "$1")
-		n=$(basename "$n")
+		case $2 in
+		/*) n=$(basename "$2" .toml) ;;
+		*)
+			n=$(dirname "$2")
+			[ "$n" = "." ] && n=$(basename "$1")
+			n=$(basename "$n")
+			;;
+		esac
 	fi
 	printf '%s' "$n"
 }
@@ -289,18 +317,44 @@ check_event() { # <manifest> <event>
 # second overwrite the first, with both shown in the listing as if both had
 # been registered.
 SEEN=""
+LOCALS=""
 seen_name() { # <event> <name> <manifest>
 	key="$1/$2"
 	case " $SEEN " in
 	*" $key "*) die "$3: $2 is already registered for $1 by another manifest; give one of them a different name" ;;
 	esac
 	SEEN="$SEEN $key"
+	case $3 in /*) LOCALS="$LOCALS $key" ;; esac
+}
+
+# Whether a tracked manifest's hook is the one a clone-local manifest of the
+# same name already declares for the same event. The clone's own declaration is
+# the more specific, and a tool that generates its local manifest from a wider
+# source than the tracked file can see (a layer that is not committed) has to be
+# able to say the same thing there without the two registering twice. The local
+# manifests are read first, so by the time a tracked one is asked about this,
+# `LOCALS` holds them.
+shadowed() { # <event> <name> <manifest>
+	case $3 in /*) return 1 ;; esac
+	# By name, not by event: the local manifest replaces the tracked one whole,
+	# so an event only the tracked one declares stops registering with it. A
+	# replacement that left the rest of the old manifest running would be a
+	# merge, and the documentation promises a replacement.
+	case " $LOCALS " in *"/$2 "*) return 0 ;; esac
+	return 1
 }
 
 # Where a manifest's hooks run, relative to the repository root. Empty for one
 # at the root, which is why nothing here may go through a whitespace-separated
 # field: an empty value has to survive being passed around.
 manifest_dir() { # <relative manifest path>
+	case $1 in
+	/*)
+		# a clone-local manifest runs from the repository root
+		printf ''
+		return 0
+		;;
+	esac
 	d=$(dirname "$1")
 	[ "$d" = "." ] && d=""
 	printf '%s' "$d"
@@ -309,14 +363,17 @@ manifest_dir() { # <relative manifest path>
 # Every event any manifest declares, once each, in the order first seen.
 collect_events() { # <root> <manifests>
 	evs=""
-	for m in $2; do
-		for ev in $(manifest_read events "$1/$m"); do
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
+		for ev in $(manifest_read events "$(mf "$1" "$m")"); do
 			case " $evs " in
 			*" $ev "*) ;;
 			*) evs="$evs $ev" ;;
 			esac
 		done
-	done
+	done <<EOF
+$2
+EOF
 	printf '%s' "$evs"
 }
 
@@ -333,39 +390,111 @@ show_argv() { # <newline separated argv>
 
 cmd_install() {
 	yes=0
-	for a in "$@"; do
-		case $a in
+	only=""
+	while [ $# -gt 0 ]; do
+		case $1 in
 		-y | --yes) yes=1 ;;
-		-*) die "unknown flag: $a" ;;
+		--only)
+			[ $# -ge 2 ] || die "--only takes a manifest name"
+			check_name "--only" "$2"
+			only="$only $2"
+			shift
+			;;
+		-*) die "unknown flag: $1" ;;
 		esac
+		shift
 	done
 
 	root=$(repo_root)
 	manifests=$(find_manifests "$root")
-	[ -n "$manifests" ] || die "no tracked shook.toml anywhere in $root"
+	[ -n "$manifests" ] || die "no tracked shook.toml anywhere in $root, and none in $(shook_dir "$root")/manifests"
+
+	# A clone-local manifest replaces a tracked one of its name as a whole, even
+	# one that declares no event, so the names are noted before anything is
+	# planned and not as each event is read.
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
+		case $m in /*) LOCALS="$LOCALS none/$(manifest_name "$root" "$m")" ;; esac
+	done <<EOF
+$manifests
+EOF
+
+	# `--only` registers the named manifests and leaves every other one
+	# unregistered: `install --yes` is the consent for what the caller named,
+	# and a manifest that arrived through a merge is still waiting to be looked
+	# at. The registry entries of the others are neither written nor pruned.
+	# Every event any manifest declares gets a dispatcher and has the hook that
+	# is already there adopted, named or not: taking `core.hooksPath` stops git
+	# reading the old directory for all of them, so a hook at an event the named
+	# manifests do not declare would otherwise stop running for good.
+	all_events=""
+	for _e in $(collect_events "$root" "$manifests"); do
+		for _k in $KNOWN_EVENTS; do
+			[ "$_e" = "$_k" ] && all_events="$all_events $_e"
+		done
+	done
+	# And an event no manifest declares at all but where a hook already sits: git
+	# stops reading that directory for it too, so it is adopted and given a
+	# dispatcher like the rest, or it would stop running with nothing said.
+	_od=$(old_hooks_dir "$root")
+	if [ -n "$_od" ]; then
+		for _k in $KNOWN_EVENTS; do
+			[ -f "$_od/$_k" ] || continue
+			case " $all_events " in *" $_k "*) continue ;; esac
+			all_events="$all_events $_k"
+		done
+	fi
+	if [ -n "$only" ]; then
+		kept=""
+		while IFS= read -r m; do
+			[ -n "$m" ] || continue
+			n=$(manifest_name "$root" "$m")
+			case " $only " in *" $n "*) kept="$kept
+$m" ;; esac
+		done <<EOF
+$manifests
+EOF
+		for _n in $only; do
+			found=""
+			while IFS= read -r m; do
+				[ -n "$m" ] || continue
+				[ "$(manifest_name "$root" "$m")" = "$_n" ] && found=1
+			done <<EOF
+$manifests
+EOF
+			[ -n "$found" ] || die "no manifest answers to: $_n"
+		done
+		[ -n "$kept" ] || die "no manifest answers to:$only"
+		manifests=$(printf '%s\n' "$kept" | sed '/^$/d')
+	fi
 
 	# Two passes over the manifests rather than one pass into a plan file. The
 	# encoding that would need is a field separator that survives an empty
 	# field, and shell `read` collapses runs of whitespace, so a tab-separated
 	# plan silently loses an empty working directory and shifts everything
 	# after it. Reading the manifests twice costs nothing and cannot do that.
-	events=$(collect_events "$root" "$manifests")
-
 	printf 'git-shook will register:\n\n'
-	for m in $manifests; do
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
 		name=$(manifest_name "$root" "$m")
 		check_name "$m" "$name"
 		wd=$(manifest_dir "$m")
-		for ev in $(manifest_read events "$root/$m"); do
+		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
 			check_event "$m" "$ev"
-			argv=$(manifest_read argv "$root/$m" "$ev")
+			argv=$(manifest_read argv "$(mf "$root" "$m")" "$ev")
 			[ -n "$argv" ] || die "$m: [hooks.$ev] has no run"
+			if shadowed "$ev" "$name" "$m"; then
+				printf '  %-14s %-16s replaced by this clone'"'"'s own manifest of that name\n' "$ev" "$name"
+				continue
+			fi
 			seen_name "$ev" "$name" "$m"
 			printf '  %-14s %-16s %s' "$ev" "$name" "$(show_argv "$argv")"
 			[ -n "$wd" ] && printf ' (in %s)' "$wd"
 			printf '\n'
 		done
-	done
+	done <<EOF
+$manifests
+EOF
 	printf '\n'
 
 	sd=$(shook_dir "$root")
@@ -384,25 +513,138 @@ cmd_install() {
 
 	# A hook that is already there is moved in beside the others rather than
 	# replaced, so it keeps running and uninstall can put it back.
-	migrate_existing "$root" "$events" "$manifests"
+	migrate_existing "$root" "$all_events" "$manifests"
 
-	for ev in $events; do
+	# Whatever hook sits in git's own hooks directory and does nothing but run
+	# what a manifest registers is run by its entry, and a tool that chains to
+	# that directory afterwards (mockspace's gate) must be able to tell. It is
+	# not always what `migrate_existing` looked at, which reads the directory
+	# `core.hooksPath` named before.
+	for ev in $all_events; do
+		h="$sd/../hooks/$ev"
+		[ -f "$h" ] && [ ! -f "$sd/declined/$ev" ] || continue
+		declares_this_hook "$root" "$manifests" "$ev" "$h" || continue
+		note_declined "$sd" "$ev" "$h"
+	done
+
+	# A hook kept by an earlier install that runs what a manifest registered
+	# now declares would run it twice beside that entry. An install with
+	# `--only` keeps it, because the manifest that declares it was not being
+	# registered; a later one that does register that manifest drops it.
+	for ev in $all_events; do
+		[ -f "$sd/kept/$ev" ] && [ -f "$sd/entries/$ev/00-existing" ] || continue
+		if declares_this_hook "$root" "$manifests" "$ev" "$sd/kept/$ev"; then
+			note_declined "$sd" "$ev" "$sd/kept/$ev"
+			rm -f "$sd/kept/$ev" "$sd/entries/$ev/00-existing"
+			printf 'dropped the kept %s hook, which runs what a manifest registers now\n' "$ev"
+		fi
+	done
+
+	# A hook left in place because a manifest registered what it does is run by
+	# nothing once that manifest drops the event. A full install sees every
+	# manifest, so it can tell, and keeps the hook as an entry again while the
+	# file is still there unchanged.
+	if [ -z "$only" ]; then
+		for d in "$sd"/declined/*; do
+			[ -f "$d" ] || continue
+			ev=${d##*/}
+			declares_this_hook "$root" "$manifests" "$ev" "$sd/declined/$ev" && continue
+			src=$(cat "$sd/from/$ev" 2>/dev/null) || src="$sd/../hooks/$ev"
+			if cmp -s "$sd/declined/$ev" "$src"; then
+				keep_existing "$sd" "$ev" "$sd/declined/$ev"
+				printf 'kept the %s hook again, which no manifest registers now, as 00-existing\n' "$ev"
+			fi
+			rm -f "$sd/declined/$ev"
+		done
+	fi
+
+	for ev in $all_events; do
 		mkdir -p "$sd/entries/$ev"
 		dispatcher_text >"$sd/hooks/$ev"
 		chmod +x "$sd/hooks/$ev"
 	done
 
-	for m in $manifests; do
+	# An entry a manifest no longer declares stops running on the next install,
+	# so a hook taken out of a manifest is not left behind in the registry.
+	# Only the names a manifest answers to are cleared; `00-existing` and any
+	# entry somebody placed by hand are not, once a record of the names exists.
+	# Before one does, an entry no manifest answers to cannot be told from the
+	# leavings of an older install, so the first install clears it and says so.
+	# A manifest that is gone entirely is cleared by the names recorded at the
+	# last install, since nothing current answers to its name any more.
+	current=""
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
+		name=$(manifest_name "$root" "$m")
+		check_name "$m" "$name"
+		current="$current $name"
+		for f in "$sd"/entries/*/"$name"; do
+			[ -f "$f" ] && rm -f "$f"
+		done
+	done <<EOF
+$manifests
+EOF
+	if [ -f "$sd/names" ] && [ -z "$only" ]; then
+		while IFS= read -r old; do
+			[ -n "$old" ] || continue
+			case " $current " in *" $old "*) continue ;; esac
+			for f in "$sd"/entries/*/"$old"; do
+				[ -f "$f" ] || continue
+				rm -f "$f"
+				printf 'removed the %s entry of %s, which no manifest answers to\n' "$old" "${f%/*}"
+			done
+		done <"$sd/names"
+	elif [ ! -f "$sd/names" ] && [ -z "$only" ]; then
+		# An install by a git-shook that kept no record of the names. What it
+		# registered is every entry here but `00-existing`, so those no
+		# manifest answers to now are its leavings, and saying so is the
+		# difference between a pruned entry and one that keeps running.
+		for f in "$sd"/entries/*/*; do
+			[ -f "$f" ] || continue
+			old=${f##*/}
+			[ "$old" = 00-existing ] && continue
+			case " $current " in *" $old "*) continue ;; esac
+			rm -f "$f"
+			printf 'removed the %s entry of %s, which no manifest answers to\n' "$old" "${f%/*}"
+		done
+	fi
+	# Under `--only` the names already recorded stay, since the manifests that
+	# own them were not looked at.
+	if [ -n "$only" ]; then
+		# With no record yet, the entries already here are what an older install
+		# registered, and recording only the named one would leave the rest
+		# unrecorded for good: a later full install prunes by the record.
+		if [ ! -f "$sd/names" ]; then
+			for f in "$sd"/entries/*/*; do
+				[ -f "$f" ] || continue
+				name=${f##*/}
+				[ "$name" = 00-existing ] && continue
+				grep -qx -- "$name" "$sd/names" 2>/dev/null || printf '%s\n' "$name" >>"$sd/names"
+			done
+		fi
+		for name in $current; do
+			grep -qx -- "$name" "$sd/names" 2>/dev/null || printf '%s\n' "$name" >>"$sd/names"
+		done
+	else
+		: >"$sd/names"
+		for name in $current; do printf '%s\n' "$name" >>"$sd/names"; done
+	fi
+
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
 		name=$(manifest_name "$root" "$m")
 		check_name "$m" "$name"
 		wd=$(manifest_dir "$m")
-		for ev in $(manifest_read events "$root/$m"); do
+		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
+			shadowed "$ev" "$name" "$m" && continue
 			{
 				printf '%s\n' "$wd"
-				manifest_read argv "$root/$m" "$ev"
+				manifest_read argv "$(mf "$root" "$m")" "$ev"
 			} >"$sd/entries/$ev/$name"
 		done
-	done
+	done <<EOF
+$manifests
+EOF
 
 	# Absolute, because the git directory is not always under the working tree:
 	# a linked worktree's `.git` is a file, a submodule's is elsewhere entirely,
@@ -460,8 +702,12 @@ cmd_install() {
 # written by a tool names an absolute path, and worth knowing before somebody
 # widens what counts as a match.
 declares_this_hook() { # <root> <manifests> <event> <hook file>
-	for _m in $2; do
-		_argv=$(manifest_read argv "$1/$_m" "$3")
+	while IFS= read -r _m; do
+		[ -n "$_m" ] || continue
+		# a tracked manifest a clone-local one has replaced registers nothing, so
+		# a hook running what it declares is not covered by it
+		shadowed "$3" "$(manifest_name "$1" "$_m")" "$_m" && continue
+		_argv=$(manifest_read argv "$(mf "$1" "$_m")" "$3")
 		[ -n "$_argv" ] || continue
 		printf '%s\n' "$_argv" | grep -q '[[:space:]]' && continue
 		_cmd=$(printf '%s\n' "$_argv" | tr '\n' ' ')
@@ -480,8 +726,89 @@ declares_this_hook() { # <root> <manifests> <event> <hook file>
 			}
 			END { exit((n == 1 && only == want) ? 0 : 1) }
 		' "$4" && return 0
-	done
+	done <<EOF
+$2
+EOF
 	return 1
+}
+
+# Where a hook was taken from. It is `core.hooksPath`'s old directory as often
+# as `.git/hooks`, and a later install that wants to know whether the hook is
+# still there has to look in the place it was.
+note_source() { # <shook dir> <event> <hook file>
+	mkdir -p "$1/from"
+	printf '%s\n' "$3" >"$1/from/$2"
+}
+
+# Remember a hook this tool declined to run itself because a manifest registers
+# what it does. The original file stays where it was, and a tool that chains to
+# the repository's own `.git/hooks/<event>` after its own checks, as
+# mockspace's gate does, would run it a second time beside the registered
+# entry. The copy is what lets that tool recognise the file as already run:
+# `<git-dir>/shook/declined/<event>` equal to the file means skip it, and a
+# file someone has since changed is a different hook and is chained to.
+note_declined() { # <shook dir> <event> <hook file>
+	mkdir -p "$1/declined"
+	cp "$3" "$1/declined/$2"
+}
+
+# Keep a hook as the first entry of its event: a copy under `kept/`, which
+# `uninstall` puts back, and an entry that runs it.
+keep_existing() { # <shook dir> <event> <hook file>
+	mkdir -p "$1/entries/$2" "$1/kept"
+	cp "$3" "$1/kept/$2"
+	chmod +x "$1/kept/$2"
+	{
+		printf '\n'
+		# Run it directly rather than through `sh`. It carries its own
+		# shebang and it is as likely to be python or perl as shell, in
+		# which case `sh` turns a hook that worked into a syntax error
+		# while the tool reports it was kept.
+		#
+		# Absolute, for the same reason `core.hooksPath` is: the git
+		# directory is not reliably under the working tree, so a path
+		# relative to either is wrong somewhere.
+		printf '%s\n' "$1/kept/$2"
+	} >"$1/entries/$2/00-existing"
+}
+
+# The directory git read hooks from before this install: the old
+# `core.hooksPath`, or git's own when there was none. Empty when that was this
+# tool's dispatcher, which holds nothing to adopt.
+old_hooks_dir() { # <root>
+	_sd=$(shook_dir "$1")
+	_old=$(git -C "$1" config --get core.hooksPath || true)
+	case $_old in
+	"$_sd/hooks" | .shook/hooks) return 0 ;;
+	# An absolute hooksPath is already a path and must not be joined to the
+	# root, which would produce `/repo//etc/git/hooks`.
+	/*) printf '%s\n' "$_old" ;;
+	"")
+		# `.git` is a file rather than a directory in a linked worktree and
+		# in a submodule, so the hooks directory is not `$root/.git/hooks`
+		# there. Ask git where it is instead of assuming.
+		_from=$(git -C "$1" rev-parse --git-path hooks 2>/dev/null) || _from="$1/.git/hooks"
+		case $_from in
+		/*) ;;
+		*) _from="$1/$_from" ;;
+		esac
+		printf '%s\n' "$_from"
+		;;
+	*) printf '%s\n' "$1/$_old" ;;
+	esac
+}
+
+# Where a kept hook for `<event>` goes back to: the directory recorded when it
+# was taken, else git's own hooks directory.
+old_hooks_dir_recorded() { # <root> <shook dir> <event>
+	if [ -f "$2/from/$3" ]; then
+		_src=$(cat "$2/from/$3")
+		dirname "$_src"
+		return 0
+	fi
+	_c=$(git -C "$1" rev-parse --git-common-dir 2>/dev/null) || _c="$1/.git"
+	case $_c in /*) ;; *) _c="$1/$_c" ;; esac
+	printf '%s\n' "$_c/hooks"
 }
 
 # An existing hook at an event we are about to take is moved to
@@ -501,46 +828,21 @@ migrate_existing() { # <root> <events> <manifests>
 		migrate_legacy_kept "$1"
 		return 0
 	fi
+	[ -n "$old" ] && [ ! -f "$sd/oldpath" ] && { mkdir -p "$sd"; printf '%s\n' "$old" >"$sd/oldpath"; }
 
-	case $old in
-	# An absolute hooksPath is already a path and must not be joined to the
-	# root, which would produce `/repo//etc/git/hooks`.
-	/*) from=$old ;;
-	"")
-		# `.git` is a file rather than a directory in a linked worktree and
-		# in a submodule, so the hooks directory is not `$root/.git/hooks`
-		# there. Ask git where it is instead of assuming.
-		from=$(git -C "$1" rev-parse --git-path hooks 2>/dev/null) || from="$1/.git/hooks"
-		case $from in
-		/*) ;;
-		*) from="$1/$from" ;;
-		esac
-		;;
-	*) from="$1/$old" ;;
-	esac
+	from=$(old_hooks_dir "$1")
 
 	for ev in $2; do
 		h="$from/$ev"
 		[ -f "$h" ] || continue
 		if declares_this_hook "$1" "$3" "$ev" "$h"; then
+			note_declined "$sd" "$ev" "$h"
+			note_source "$sd" "$ev" "$h"
 			printf 'the %s hook already here runs what a manifest declares, so it is registered once rather than kept as well\n' "$ev"
 			continue
 		fi
-		mkdir -p "$sd/entries/$ev" "$sd/kept"
-		cp "$h" "$sd/kept/$ev"
-		chmod +x "$sd/kept/$ev"
-		{
-			printf '\n'
-			# Run it directly rather than through `sh`. It carries its own
-			# shebang and it is as likely to be python or perl as shell, in
-			# which case `sh` turns a hook that worked into a syntax error
-			# while the tool reports it was kept.
-			#
-			# Absolute, for the same reason `core.hooksPath` is: the git
-			# directory is not reliably under the working tree, so a path
-			# relative to either is wrong somewhere.
-			printf '%s\n' "$sd/kept/$ev"
-		} >"$sd/entries/$ev/00-existing"
+		keep_existing "$sd" "$ev" "$h"
+		note_source "$sd" "$ev" "$h"
 		printf 'kept the %s hook that was already here, as 00-existing\n' "$ev"
 	done
 }
@@ -622,19 +924,48 @@ cmd_doctor() {
 		bad=1
 	fi
 
-	for m in $(find_manifests "$root"); do
-		for ev in $(manifest_read events "$root/$m"); do
+	declared=""
+	manifests=$(find_manifests "$root")
+	# A clone-local manifest replaces a tracked one of its name whole, so what
+	# the tracked one declares is not owed an entry.
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
+		case $m in /*) LOCALS="$LOCALS none/$(manifest_name "$root" "$m")" ;; esac
+	done <<EOF
+$manifests
+EOF
+	while IFS= read -r m; do
+		[ -n "$m" ] || continue
+		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
 			name=$(manifest_name "$root" "$m")
+			shadowed "$ev" "$name" "$m" && continue
+			declared="$declared $ev/$name "
 			if [ ! -f "$sd/entries/$ev/$name" ]; then
 				printf '%s declares [hooks.%s] and is not registered. Run `git shook install`.\n' "$m" "$ev"
 				bad=1
 			fi
 		done
-	done
+	done <<EOF
+$manifests
+EOF
 
 	if [ -d "$sd/entries" ]; then
 		for ev in "$sd"/entries/*; do
 			[ -d "$ev" ] || continue
+			# An entry nothing declares runs on every commit and was left by a
+			# manifest that has gone: `--only` installs never prune, so this is
+			# the only place it shows.
+			for f in "$ev"/*; do
+				[ -f "$f" ] || continue
+				n=${f##*/}
+				[ "$n" = 00-existing ] && continue
+				# only what the last install recorded: an entry placed by hand is the
+				# operator's and a full install leaves it alone
+				grep -qx -- "$n" "$sd/names" 2>/dev/null || continue
+				case "$declared" in *" ${ev##*/}/$n "*) continue ;; esac
+				printf 'the %s entry of %s is declared by no manifest. Run `git shook install` without --only to remove it.\n' "$n" "${ev##*/}"
+				bad=1
+			done
 			e="$sd/hooks/${ev##*/}"
 			if [ ! -x "$e" ]; then
 				printf 'entries exist for %s with no dispatcher. Run `git shook install`.\n' "${ev##*/}"
@@ -669,26 +1000,35 @@ cmd_uninstall() {
 	if [ -d "$sd/kept" ]; then
 		for k in "$sd"/kept/*; do
 			[ -f "$k" ] || continue
-			# Same as the migration: ask git where hooks live rather than
-			# assuming `.git/hooks`, which is wrong in a linked worktree and
-			# in a submodule.
-			hd=$(git -C "$root" rev-parse --git-path hooks 2>/dev/null) || hd="$root/.git/hooks"
-			case $hd in /*) ;; *) hd="$root/$hd" ;; esac
+			# Back to the directory it was taken from, which is the old
+			# `core.hooksPath` as often as git's own: asking git now would answer
+			# with this tool's dispatcher directory, which is removed below.
+			ev=${k##*/}
+			hd=$(old_hooks_dir_recorded "$root" "$sd" "$ev")
 			mkdir -p "$hd"
-			cp "$k" "$hd/${k##*/}"
-			chmod +x "$hd/${k##*/}"
-			printf 'put back the %s hook that was here before\n' "${k##*/}"
+			cp "$k" "$hd/$ev"
+			chmod +x "$hd/$ev"
+			printf 'put back the %s hook that was here before\n' "$ev"
 		done
 	fi
-	git -C "$root" config --unset core.hooksPath 2>/dev/null || true
-	rm -rf "$sd"
+	# And the key goes back to whoever held it, if anybody did.
+	if [ -f "$sd/oldpath" ]; then
+		git -C "$root" config core.hooksPath "$(cat "$sd/oldpath")"
+	else
+		git -C "$root" config --unset core.hooksPath 2>/dev/null || true
+	fi
+	# The manifests a clone keeps in `manifests/` are declarations and not
+	# registry, and are whatever the operator or a tool put there, so they stay
+	# and the next `install` picks them up again.
+	rm -rf "$sd/hooks" "$sd/entries" "$sd/kept" "$sd/declined" "$sd/from" "$sd/oldpath" "$sd/names"
+	rmdir "$sd" 2>/dev/null || true
 	# And whatever an older git-shook left at the repository root, on the same
 	# terms `install` uses: a tracked one is somebody's committed file and not
 	# this tool's to delete.
 	if [ -d "$root/.shook" ] && [ -z "$(git -C "$root" ls-files -- .shook)" ]; then
 		rm -rf "$root/.shook"
 	fi
-	printf 'removed %s and cleared core.hooksPath\n' "$sd"
+	printf 'removed the registry in %s and put core.hooksPath back\n' "$sd"
 }
 
 # ---------------------------------------------------------------------------
@@ -705,8 +1045,11 @@ USAGE
     git shook <command>
 
 COMMANDS
-    install [--yes]   Read every tracked shook.toml, show what each would run,
-                      and register it once you say so.
+    install [--yes] [--only <name>]
+                      Read every tracked shook.toml, show what each would run,
+                      and register it once you say so. --only registers the
+                      manifests of that name and leaves the others as they
+                      were, which is what a tool registering its own wants.
     list              What is registered, per event, in the order it runs.
     doctor            Whether what is declared and what is registered agree.
     uninstall         Remove the registry and put back the hook that was here.
@@ -726,6 +1069,10 @@ a script and names it, which puts it in a diff where somebody can object to it.
 
 Discovery happens when you run `install`, never when a hook fires, so a manifest
 arriving through a merge does nothing until you look at it and say yes.
+
+A declaration only this clone has goes in <git-dir>/shook/manifests/<name>.toml,
+in the same format. install reads it beside the tracked ones, it runs from the
+repository root, and it replaces a tracked manifest of the same name as a whole.
 HELPTEXT
 }
 

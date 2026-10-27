@@ -30,13 +30,24 @@ Nothing is installed until
 .B install
 is run, and manifests are read only then, never when a hook fires. A manifest
 arriving through a merge therefore does nothing until somebody looks at it.
+.PP
+A declaration that only one clone has goes in
+.I <git-dir>/shook/manifests/<name>.toml
+in the same format. It is read beside the tracked manifests, runs from the
+repository root, and replaces a tracked manifest of the same name as a whole.
+.B git shook uninstall
+leaves that directory in place.
 .SH COMMANDS
 .TP
-.B install " [\-\-yes]"
+.B install " [\-\-yes] [\-\-only name]..."
 Read every tracked manifest, print what each would run, and register it. With
 .B \-\-yes
 it does not ask, which is what a script wants and what a person should not use
-the first time.
+the first time. With
+.BI \-\-only " name"
+(repeatable) only the manifests of that name are registered and pruned; every
+other manifest stays as it was, registered or not, so a tool registering its own
+declaration does not also say yes to one that arrived through a merge.
 .TP
 .B list
 What is registered, per event, in the order it runs.
@@ -94,6 +105,10 @@ Whatever hook was at the event before, still running as the first entry. A hook
 that does nothing but run what a manifest declares at that same event is not
 kept, since it is the entrypoint a tool wrote before it moved onto a manifest
 and keeping it would run that tool twice.
+.TP
+.I .git/shook/declined/<event>
+A copy of a hook left in place for that reason. A tool that chains to the
+repository's own hook after its checks skips the file while it equals this copy.
 .SH EXIT STATUS
 .TP
 .B 0

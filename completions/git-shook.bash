@@ -16,7 +16,7 @@ _git_shook() {
 
 	case "$prev" in
 	install)
-		COMPREPLY=($(compgen -W "--yes" -- "$cur"))
+		COMPREPLY=($(compgen -W "--yes --only" -- "$cur"))
 		return
 		;;
 	esac

@@ -70,7 +70,7 @@ git shook install
 That reads every tracked `shook.toml`, prints the argument list each one would
 run, and registers them once it has been confirmed. `git shook list` prints what
 is registered and in what order, `git shook doctor` says whether what is
-declared and what is registered still agree, and `git shook uninstall` takes the
+declared and what is registered still agree, in both directions, and `git shook uninstall` takes the
 lot back out and restores whatever hook was at the event beforehand.
 
 `run` is an argument list rather than a command line. Nothing goes through a
@@ -90,6 +90,36 @@ manifest at `mock/shook.toml` names paths relative to `mock/` and a project
 inside a monorepo does not have to know where it sits. `name` decides the
 filename in the registry and therefore the order, which is sorted; leaving it
 out uses the directory's name.
+
+A declaration that only one clone has goes in `.git/shook/manifests/<name>.toml`,
+in the same format. `install` reads those beside the tracked ones, they run from
+the repository root, and being in the git directory they are never committed and
+never arrive through a merge: whoever put one there is whoever runs `install`.
+It is the place for a tool that generates its registration from something the
+repository does not track, a layer of local configuration for instance, and wants
+it to reach the same dispatcher as everything else. Where a local manifest and a
+tracked one share a `name`, the local one is what registers in its entirety, so an event only the tracked
+one declares is not registered, and the plan says so. A clone whose path contains
+whitespace holds local manifests like any other, and so does a manifest whose
+file name or directory carries whitespace or glob characters: the list is read a
+path to a line and never split into words.
+
+`install --yes --only <name>` registers only the manifests of that name (repeat
+the flag for more) and leaves every other one as it was, unregistered or not. A
+tool that generates its own declaration passes its own name, so its `--yes` is
+the consent for what it wrote and a tracked manifest that arrived through a merge
+still waits to be looked at. Taking `core.hooksPath` stops git reading the old
+hooks directory for every event, so a hook already there at any event is kept as
+`00-existing` and the event gets a dispatcher, whether or not a manifest declares
+it, and named or not. `uninstall` puts each such hook back in the directory it
+came from and sets `core.hooksPath` back to what it was.
+
+An entry a manifest no longer declares stops running on the next `install`, which
+clears the names the manifests answer to, and the names the last install recorded
+that nothing answers to now, before it writes them again. The first install after an upgrade has no record
+yet, so it clears every entry but `00-existing` that no manifest answers to, and
+says which. Every name given to `--only` has to be a manifest, or the install is refused whole, and an `--only` install never prunes, so an entry whose manifest has gone shows up in `doctor` until a full install clears it. `uninstall`
+takes the registry out and leaves `manifests/` where it is.
 
 ## Example
 
@@ -178,6 +208,10 @@ anything added there will keep reading the manifests that exist now.
       ante         one argument per line, the first being the working directory
       mockspace
   kept/            whatever hook was at the event before, still running
+  declined/        a copy of each hook left in place because a manifest registers what it does
+  from/            where each kept or declined hook was taken from
+  oldpath          the `core.hooksPath` that was set before the install, given back by uninstall
+  manifests/       declarations only this clone has, read by install; never removed
 ```
 
 All of it inside the git directory, so none of it is committed and nobody has to
@@ -190,7 +224,10 @@ A hook already at the event is kept and runs first, with one exception: where it
 does nothing but run what a manifest declares at that same event, it is the
 entrypoint a tool wrote for itself before it moved onto a manifest, and keeping
 it would run that tool twice per event. So it is registered once from the
-manifest and left where it is. Anything doing more than that is somebody's own
+manifest and left where it is. A copy goes to `declined/`, so a tool that chains to the
+repository's own hook afterwards can tell that file has already run. The hook in git's own hooks directory is
+looked at for this whatever `core.hooksPath` was before the install, since that
+directory is the one such a chain reaches. When no manifest registers what it runs any more, the next full install keeps it as `00-existing` again. Anything doing more than that is somebody's own
 and is kept.
 
 ### Limitations
