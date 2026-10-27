@@ -823,6 +823,8 @@ a_local_manifest_replaces_the_whole_tracked_one_not_only_the_events_it_names() {
 
     assert_ok test -f "$w/.git/shook/entries/pre-commit/mine"
     assert_fails test -e "$w/.git/shook/entries/post-commit/mine"
+    # and doctor agrees: the replaced manifest's other event is not owed an entry
+    assert_ok bash -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
     printf 'y\n' > "$w/f.txt"
     local out; out="$(commit_all "$w" second)"
     assert_contains "$out" LOCAL-PRE
@@ -862,7 +864,6 @@ a_local_manifest_in_a_path_with_whitespace_is_refused_by_name() {
     # a tracked manifest is there, so the refusal is the whitespace and not the
     # absence of anything to register, which is what the old message blamed
     local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)"
-    local st=$?
     assert_contains "$out" "containing whitespace"
     assert_not_contains "$out" "Registered"
     assert_fails test -e "$w/.git/shook/entries/pre-commit/mine"
@@ -902,6 +903,12 @@ only_registers_the_manifest_it_names_and_leaves_a_merged_in_one_waiting() {
     # the control: without the flag the other one registers too
     ( cd "$w" && "$SHOOK" install --yes >/dev/null )
     assert_ok test -f "$w/.git/shook/entries/pre-commit/theirs"
+    # and a later `--only` leaves what it was not asked about as it was: the
+    # entry stays, with its content, and so does its row in the names record
+    printf 'sentinel\n' > "$w/.git/shook/entries/pre-commit/theirs"
+    ( cd "$w" && "$SHOOK" install --yes --only mine >/dev/null )
+    assert_eq "$(cat "$w/.git/shook/entries/pre-commit/theirs")" sentinel
+    assert_ok grep -qx theirs "$w/.git/shook/names"
     # and a name nothing answers to is refused
     assert_fails bash -c "cd '$w' && '$SHOOK' install --yes --only nothing-by-that-name >/dev/null 2>&1"
     rm -rf "$w"
@@ -915,8 +922,29 @@ a_local_manifest_declaring_no_event_still_replaces_the_tracked_one_of_its_name()
     mkdir -p "$w/.git/shook/manifests"
     printf 'name = "mine"\n' > "$w/.git/shook/manifests/mine.toml"
 
-    ( cd "$w" && "$SHOOK" install --yes >/dev/null 2>&1 || true )
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)"
+    assert_ok test -d "$w/.git/shook/hooks"
+    assert_contains "$out" "replaced by this clone's own manifest of that name"
     assert_fails test -e "$w/.git/shook/entries/pre-commit/mine"
+    rm -rf "$w"
+}
+
+#[test]
+the_first_install_after_an_upgrade_removes_an_entry_no_manifest_answers_to() {
+    # a clone installed by a git-shook that kept no record of the names: its
+    # tracked manifest is gone, and the entry it registered would keep running
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" gone sh -c 'echo GONE-RAN'
+    commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/gone"
+
+    rm -f "$w/.git/shook/names"
+    git -C "$w" rm -q shook.toml
+    a_local_manifest "$w" mine pre-commit sh -c 'echo MINE-RAN'
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_fails test -e "$w/.git/shook/entries/pre-commit/gone"
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/mine"
     rm -rf "$w"
 }
 

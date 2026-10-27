@@ -518,6 +518,19 @@ $m" ;; esac
 				[ -f "$f" ] && rm -f "$f"
 			done
 		done <"$sd/names"
+	elif [ ! -f "$sd/names" ] && [ -z "$only" ]; then
+		# An install by a git-shook that kept no record of the names. What it
+		# registered is every entry here but `00-existing`, so those no
+		# manifest answers to now are its leavings, and saying so is the
+		# difference between a pruned entry and one that keeps running.
+		for f in "$sd"/entries/*/*; do
+			[ -f "$f" ] || continue
+			old=${f##*/}
+			[ "$old" = 00-existing ] && continue
+			case " $current " in *" $old "*) continue ;; esac
+			rm -f "$f"
+			printf 'removed the %s entry of %s, which no manifest answers to\n' "$old" "${f%/*}"
+		done
 	fi
 	# Under `--only` the names already recorded stay, since the manifests that
 	# own them were not looked at.
@@ -762,9 +775,16 @@ cmd_doctor() {
 	fi
 
 	refuse_odd_manifest_paths "$root"
-	for m in $(find_manifests "$root"); do
+	manifests=$(find_manifests "$root")
+	# A clone-local manifest replaces a tracked one of its name whole, so what
+	# the tracked one declares is not owed an entry.
+	for m in $manifests; do
+		case $m in /*) LOCALS="$LOCALS none/$(manifest_name "$root" "$m")" ;; esac
+	done
+	for m in $manifests; do
 		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
 			name=$(manifest_name "$root" "$m")
+			shadowed "$ev" "$name" "$m" && continue
 			if [ ! -f "$sd/entries/$ev/$name" ]; then
 				printf '%s declares [hooks.%s] and is not registered. Run `git shook install`.\n' "$m" "$ev"
 				bad=1

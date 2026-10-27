@@ -110,7 +110,9 @@ still waits to be looked at.
 
 An entry a manifest no longer declares stops running on the next `install`, which
 clears the names the manifests answer to, and the names the last install recorded
-that nothing answers to now, before it writes them again. `uninstall`
+that nothing answers to now, before it writes them again. The first install after an upgrade has no record
+yet, so it clears every entry but `00-existing` that no manifest answers to, and
+says which. `uninstall`
 takes the registry out and leaves `manifests/` where it is.
 
 ## Example
