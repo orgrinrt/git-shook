@@ -221,7 +221,7 @@ does nothing but run what a manifest declares at that same event, it is the
 entrypoint a tool wrote for itself before it moved onto a manifest, and keeping
 it would run that tool twice per event. So it is registered once from the
 manifest and left where it is. A copy goes to `declined/`, so a tool that chains to the
-repository's own hook afterwards can tell that file has already run. Anything doing more than that is somebody's own
+repository's own hook afterwards can tell that file has already run. When no manifest registers what it runs any more, the next full install keeps it as `00-existing` again. Anything doing more than that is somebody's own
 and is kept.
 
 ### Limitations

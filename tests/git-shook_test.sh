@@ -1131,3 +1131,28 @@ a_hook_running_what_a_replaced_manifest_declared_is_kept_and_not_dropped() {
     assert_contains "$(commit_all "$w" second)" TOOL-RAN
     rm -rf "$w"
 }
+
+#[test]
+a_declined_hook_is_kept_again_once_no_manifest_registers_what_it_runs() {
+    # the hook was left in place because a manifest ran the same tool; when the
+    # manifest drops the event nothing would run it, so the next full install
+    # takes it as an entry again
+    local w; w="$(a_repo)"
+    printf '#!/bin/sh\necho THEIRS-TOOL-RAN\n' > "$w/tool"
+    chmod +x "$w/tool"
+    printf '#!/bin/sh\nexec %s "$@"\n' "$w/tool" > "$w/.git/hooks/pre-commit"
+    chmod +x "$w/.git/hooks/pre-commit"
+    a_local_manifest "$w" mine pre-commit "$w/tool"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/declined/pre-commit"
+    assert_fails test -e "$w/.git/shook/entries/pre-commit/00-existing"
+
+    a_local_manifest "$w" mine pre-push true
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)"
+    assert_contains "$out" "kept the pre-commit hook again"
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/00-existing"
+    assert_fails test -e "$w/.git/shook/declined/pre-commit"
+    printf 'y\n' > "$w/f.txt"
+    assert_contains "$(commit_all "$w" second)" THEIRS-TOOL-RAN
+    rm -rf "$w"
+}

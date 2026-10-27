@@ -507,6 +507,23 @@ EOF
 		fi
 	done
 
+	# A hook left in place because a manifest registered what it does is run by
+	# nothing once that manifest drops the event. A full install sees every
+	# manifest, so it can tell, and keeps the hook as an entry again while the
+	# file is still there unchanged.
+	if [ -z "$only" ]; then
+		for d in "$sd"/declined/*; do
+			[ -f "$d" ] || continue
+			ev=${d##*/}
+			declares_this_hook "$root" "$manifests" "$ev" "$sd/declined/$ev" && continue
+			if cmp -s "$sd/declined/$ev" "$sd/../hooks/$ev"; then
+				keep_existing "$sd" "$ev" "$sd/declined/$ev"
+				printf 'kept the %s hook again, which no manifest registers now, as 00-existing\n' "$ev"
+			fi
+			rm -f "$sd/declined/$ev"
+		done
+	fi
+
 	for ev in $all_events; do
 		mkdir -p "$sd/entries/$ev"
 		dispatcher_text >"$sd/hooks/$ev"
@@ -691,6 +708,26 @@ note_declined() { # <shook dir> <event> <hook file>
 	cp "$3" "$1/declined/$2"
 }
 
+# Keep a hook as the first entry of its event: a copy under `kept/`, which
+# `uninstall` puts back, and an entry that runs it.
+keep_existing() { # <shook dir> <event> <hook file>
+	mkdir -p "$1/entries/$2" "$1/kept"
+	cp "$3" "$1/kept/$2"
+	chmod +x "$1/kept/$2"
+	{
+		printf '\n'
+		# Run it directly rather than through `sh`. It carries its own
+		# shebang and it is as likely to be python or perl as shell, in
+		# which case `sh` turns a hook that worked into a syntax error
+		# while the tool reports it was kept.
+		#
+		# Absolute, for the same reason `core.hooksPath` is: the git
+		# directory is not reliably under the working tree, so a path
+		# relative to either is wrong somewhere.
+		printf '%s\n' "$1/kept/$2"
+	} >"$1/entries/$2/00-existing"
+}
+
 # An existing hook at an event we are about to take is moved to
 # `<git-dir>/shook/entries/<event>/00-existing` so it still runs, first, and
 # uninstall can put it back where it was.
@@ -734,21 +771,7 @@ migrate_existing() { # <root> <events> <manifests>
 			printf 'the %s hook already here runs what a manifest declares, so it is registered once rather than kept as well\n' "$ev"
 			continue
 		fi
-		mkdir -p "$sd/entries/$ev" "$sd/kept"
-		cp "$h" "$sd/kept/$ev"
-		chmod +x "$sd/kept/$ev"
-		{
-			printf '\n'
-			# Run it directly rather than through `sh`. It carries its own
-			# shebang and it is as likely to be python or perl as shell, in
-			# which case `sh` turns a hook that worked into a syntax error
-			# while the tool reports it was kept.
-			#
-			# Absolute, for the same reason `core.hooksPath` is: the git
-			# directory is not reliably under the working tree, so a path
-			# relative to either is wrong somewhere.
-			printf '%s\n' "$sd/kept/$ev"
-		} >"$sd/entries/$ev/00-existing"
+		keep_existing "$sd" "$ev" "$h"
 		printf 'kept the %s hook that was already here, as 00-existing\n' "$ev"
 	done
 }
