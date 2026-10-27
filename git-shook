@@ -244,13 +244,21 @@ shook_dir() { # <root>
 # substitution where `die` ends only the substitution and the command goes on.
 refuse_odd_manifest_paths() { # <root>
 	_ld="$(shook_dir "$1")/manifests"
-	[ -d "$_ld" ] || return 0
-	for _f in "$_ld"/*.toml; do
-		[ -f "$_f" ] || continue
-		case $_f in
-		*[[:space:]]*) die "$_f: clone-local manifests cannot be read from a path or under a name containing whitespace; move the clone or rename the file" ;;
-		esac
-	done
+	if [ -d "$_ld" ]; then
+		for _f in "$_ld"/*.toml; do
+			[ -f "$_f" ] || continue
+			case $_f in
+			*[[:space:]]*) die "$_f: clone-local manifests cannot be read from a path or under a name containing whitespace; move the clone or rename the file" ;;
+			esac
+			case ${_f##*/} in
+			*[*?[]*) die "$_f: a manifest file name cannot contain glob characters, which the manifest list would expand; rename the file" ;;
+			esac
+		done
+	fi
+	# The tracked ones go through the same word list, so the same two characters
+	# that split or expand it are refused there by name too.
+	_bad=$(git -C "$1" ls-files --full-name -- 'shook.toml' '*/shook.toml' 2>/dev/null | grep -m1 '[[:space:]*?[]') || true
+	[ -z "$_bad" ] || die "$_bad: a tracked manifest cannot sit under a path containing whitespace or glob characters, which the manifest list would split or expand; rename the directory"
 }
 
 find_manifests() { # <root>
@@ -432,6 +440,16 @@ cmd_install() {
 	# unregistered: `install --yes` is the consent for what the caller named,
 	# and a manifest that arrived through a merge is still waiting to be looked
 	# at. The registry entries of the others are neither written nor pruned.
+	# Every event any manifest declares gets a dispatcher and has the hook that
+	# is already there adopted, named or not: taking `core.hooksPath` stops git
+	# reading the old directory for all of them, so a hook at an event the named
+	# manifests do not declare would otherwise stop running for good.
+	all_events=""
+	for _e in $(collect_events "$root" "$manifests"); do
+		for _k in $KNOWN_EVENTS; do
+			[ "$_e" = "$_k" ] && all_events="$all_events $_e"
+		done
+	done
 	if [ -n "$only" ]; then
 		kept=""
 		for m in $manifests; do
@@ -448,8 +466,6 @@ $m" ;; esac
 	# field, and shell `read` collapses runs of whitespace, so a tab-separated
 	# plan silently loses an empty working directory and shifts everything
 	# after it. Reading the manifests twice costs nothing and cannot do that.
-	events=$(collect_events "$root" "$manifests")
-
 	printf 'git-shook will register:\n\n'
 	for m in $manifests; do
 		name=$(manifest_name "$root" "$m")
@@ -487,9 +503,9 @@ $m" ;; esac
 
 	# A hook that is already there is moved in beside the others rather than
 	# replaced, so it keeps running and uninstall can put it back.
-	migrate_existing "$root" "$events" "$manifests"
+	migrate_existing "$root" "$all_events" "$manifests"
 
-	for ev in $events; do
+	for ev in $all_events; do
 		mkdir -p "$sd/entries/$ev"
 		dispatcher_text >"$sd/hooks/$ev"
 		chmod +x "$sd/hooks/$ev"
@@ -498,7 +514,9 @@ $m" ;; esac
 	# An entry a manifest no longer declares stops running on the next install,
 	# so a hook taken out of a manifest is not left behind in the registry.
 	# Only the names a manifest answers to are cleared; `00-existing` and any
-	# entry somebody placed by hand are not.
+	# entry somebody placed by hand are not, once a record of the names exists.
+	# Before one does, an entry no manifest answers to cannot be told from the
+	# leavings of an older install, so the first install clears it and says so.
 	# A manifest that is gone entirely is cleared by the names recorded at the
 	# last install, since nothing current answers to its name any more.
 	current=""
@@ -535,6 +553,17 @@ $m" ;; esac
 	# Under `--only` the names already recorded stay, since the manifests that
 	# own them were not looked at.
 	if [ -n "$only" ]; then
+		# With no record yet, the entries already here are what an older install
+		# registered, and recording only the named one would leave the rest
+		# unrecorded for good: a later full install prunes by the record.
+		if [ ! -f "$sd/names" ]; then
+			for f in "$sd"/entries/*/*; do
+				[ -f "$f" ] || continue
+				name=${f##*/}
+				[ "$name" = 00-existing ] && continue
+				grep -qx -- "$name" "$sd/names" 2>/dev/null || printf '%s\n' "$name" >>"$sd/names"
+			done
+		fi
 		for name in $current; do
 			grep -qx -- "$name" "$sd/names" 2>/dev/null || printf '%s\n' "$name" >>"$sd/names"
 		done

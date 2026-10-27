@@ -1014,3 +1014,76 @@ doctor_reports_a_local_manifest_that_was_never_registered() {
     assert_contains "$out" "declares [hooks.pre-push] and is not registered"
     rm -rf "$w"
 }
+
+#[test]
+only_on_a_fresh_clone_still_adopts_the_hook_at_an_event_it_does_not_name() {
+    # taking core.hooksPath stops git reading .git/hooks for every event, so a
+    # hook at an event the named manifest does not declare would stop running
+    local w; w="$(a_repo)"
+    printf 'name = "theirs"\n\n[hooks.post-commit]\nrun = ["true"]\n' > "$w/shook.toml"
+    commit_all "$w" init >/dev/null
+    printf '#!/bin/sh\necho OLD-POSTCOMMIT > "%s/ran"\n' "$w" > "$w/.git/hooks/post-commit"
+    chmod +x "$w/.git/hooks/post-commit"
+    a_local_manifest "$w" mine pre-commit true
+
+    ( cd "$w" && "$SHOOK" install --yes --only mine >/dev/null )
+    printf 'y\n' > "$w/f.txt"
+    commit_all "$w" second >/dev/null
+    assert_ok test -f "$w/ran"
+    assert_fails test -e "$w/.git/shook/entries/post-commit/theirs"
+    rm -rf "$w"
+}
+
+#[test]
+only_with_no_record_still_lets_a_later_full_install_prune_what_is_gone() {
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" gone sh -c 'echo GONE-RAN'
+    commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    rm -f "$w/.git/shook/names"
+    git -C "$w" rm -q shook.toml
+    a_local_manifest "$w" mine pre-commit true
+    ( cd "$w" && "$SHOOK" install --yes --only mine >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/gone"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_fails test -e "$w/.git/shook/entries/pre-commit/gone"
+    rm -rf "$w"
+}
+
+#[test]
+an_entry_placed_by_hand_survives_a_install_once_the_names_are_recorded() {
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" theirs true
+    commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    printf '\ntrue\n' > "$w/.git/shook/entries/pre-commit/50-hand"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/50-hand"
+    rm -rf "$w"
+}
+
+#[test]
+a_tracked_manifest_under_a_path_with_whitespace_is_refused_by_name() {
+    local w; w="$(a_repo)"
+    mkdir -p "$w/a b"
+    printf 'name = "spaced"\n\n[hooks.pre-commit]\nrun = ["true"]\n' > "$w/a b/shook.toml"
+    commit_all "$w" init >/dev/null
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1 || true)"
+    assert_contains "$out" "whitespace or glob characters"
+    assert_not_contains "$out" "Registered"
+    assert_fails bash -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
+    rm -rf "$w"
+}
+
+#[test]
+a_local_manifest_with_glob_characters_in_its_name_is_refused_by_name() {
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" theirs true
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" mine pre-commit true
+    mv "$w/.git/shook/manifests/mine.toml" "$w/.git/shook/manifests/[ab].toml"
+    printf 'name = "a"\n\n[hooks.pre-push]\nrun = ["true"]\n' > "$w/.git/shook/manifests/a.toml"
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1 || true)"
+    assert_contains "$out" "glob characters"
+    rm -rf "$w"
+}

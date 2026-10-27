@@ -100,13 +100,18 @@ repository does not track, a layer of local configuration for instance, and want
 it to reach the same dispatcher as everything else. Where a local manifest and a
 tracked one share a `name`, the local one is what registers in its entirety, so an event only the tracked
 one declares is not registered, and the plan says so. A clone whose path contains
-whitespace cannot hold local manifests, and `install` says that and stops.
+whitespace cannot hold local manifests, a local manifest file name with glob
+characters is refused, and so is a tracked manifest under a path with either,
+because the list of manifests is passed around as words; `install` and `doctor`
+say which and stop.
 
 `install --yes --only <name>` registers only the manifests of that name (repeat
 the flag for more) and leaves every other one as it was, unregistered or not. A
 tool that generates its own declaration passes its own name, so its `--yes` is
 the consent for what it wrote and a tracked manifest that arrived through a merge
-still waits to be looked at.
+still waits to be looked at. Taking `core.hooksPath` stops git reading the old
+hooks directory for every event, so a hook already there at any event a manifest
+declares is kept as `00-existing`, named or not.
 
 An entry a manifest no longer declares stops running on the next `install`, which
 clears the names the manifests answer to, and the names the last install recorded
