@@ -318,6 +318,11 @@ a_hook_running_only_what_a_manifest_declares_is_not_kept_as_well() {
     local n; n="$(wc -l < "$tally" | tr -d ' ')"
     assert_eq "$n" 1
     assert_fails test -f "$w/.git/shook/entries/pre-commit/00-existing"
+    # the original stays in `.git/hooks`, so a tool chaining to it needs to
+    # be able to see that it was declined rather than kept
+    assert_ok cmp -s "$w/.git/hooks/pre-commit" "$w/.git/shook/declined/pre-commit"
+    ( cd "$w" && "$SHOOK" uninstall >/dev/null )
+    assert_fails test -e "$w/.git/shook/declined"
     rm -rf "$w"
 }
 
@@ -1099,6 +1104,7 @@ a_kept_hook_that_runs_what_a_later_registered_manifest_declares_is_dropped() {
     assert_ok test -f "$w/.git/shook/entries/pre-commit/00-existing"
     ( cd "$w" && "$SHOOK" install --yes >/dev/null )
     assert_fails test -e "$w/.git/shook/entries/pre-commit/00-existing"
+    assert_ok cmp -s "$w/.git/hooks/pre-commit" "$w/.git/shook/declined/pre-commit"
     printf 'y\n' > "$w/f.txt"
     local out; out="$(commit_all "$w" second)"
     assert_eq "$(printf '%s\n' "$out" | grep -c THEIRS-TOOL-RAN)" 1

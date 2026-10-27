@@ -105,6 +105,10 @@ Whatever hook was at the event before, still running as the first entry. A hook
 that does nothing but run what a manifest declares at that same event is not
 kept, since it is the entrypoint a tool wrote before it moved onto a manifest
 and keeping it would run that tool twice.
+.TP
+.I .git/shook/declined/<event>
+A copy of a hook left in place for that reason. A tool that chains to the
+repository's own hook after its checks skips the file while it equals this copy.
 .SH EXIT STATUS
 .TP
 .B 0

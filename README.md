@@ -206,6 +206,7 @@ anything added there will keep reading the manifests that exist now.
       ante         one argument per line, the first being the working directory
       mockspace
   kept/            whatever hook was at the event before, still running
+  declined/        a copy of each hook left in place because a manifest registers what it does
   manifests/       declarations only this clone has, read by install; never removed
 ```
 
@@ -219,7 +220,8 @@ A hook already at the event is kept and runs first, with one exception: where it
 does nothing but run what a manifest declares at that same event, it is the
 entrypoint a tool wrote for itself before it moved onto a manifest, and keeping
 it would run that tool twice per event. So it is registered once from the
-manifest and left where it is. Anything doing more than that is somebody's own
+manifest and left where it is. A copy goes to `declined/`, so a tool that chains to the
+repository's own hook afterwards can tell that file has already run. Anything doing more than that is somebody's own
 and is kept.
 
 ### Limitations
