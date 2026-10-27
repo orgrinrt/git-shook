@@ -443,6 +443,16 @@ $m" ;; esac
 		done <<EOF
 $manifests
 EOF
+		for _n in $only; do
+			found=""
+			while IFS= read -r m; do
+				[ -n "$m" ] || continue
+				[ "$(manifest_name "$root" "$m")" = "$_n" ] && found=1
+			done <<EOF
+$manifests
+EOF
+			[ -n "$found" ] || die "no manifest answers to: $_n"
+		done
 		[ -n "$kept" ] || die "no manifest answers to:$only"
 		manifests=$(printf '%s\n' "$kept" | sed '/^$/d')
 	fi
@@ -516,7 +526,8 @@ EOF
 			[ -f "$d" ] || continue
 			ev=${d##*/}
 			declares_this_hook "$root" "$manifests" "$ev" "$sd/declined/$ev" && continue
-			if cmp -s "$sd/declined/$ev" "$sd/../hooks/$ev"; then
+			src=$(cat "$sd/from/$ev" 2>/dev/null) || src="$sd/../hooks/$ev"
+			if cmp -s "$sd/declined/$ev" "$src"; then
 				keep_existing "$sd" "$ev" "$sd/declined/$ev"
 				printf 'kept the %s hook again, which no manifest registers now, as 00-existing\n' "$ev"
 			fi
@@ -555,7 +566,9 @@ EOF
 			[ -n "$old" ] || continue
 			case " $current " in *" $old "*) continue ;; esac
 			for f in "$sd"/entries/*/"$old"; do
-				[ -f "$f" ] && rm -f "$f"
+				[ -f "$f" ] || continue
+				rm -f "$f"
+				printf 'removed the %s entry of %s, which no manifest answers to\n' "$old" "${f%/*}"
 			done
 		done <"$sd/names"
 	elif [ ! -f "$sd/names" ] && [ -z "$only" ]; then
@@ -696,6 +709,14 @@ EOF
 	return 1
 }
 
+# Where a hook was taken from. It is `core.hooksPath`'s old directory as often
+# as `.git/hooks`, and a later install that wants to know whether the hook is
+# still there has to look in the place it was.
+note_source() { # <shook dir> <event> <hook file>
+	mkdir -p "$1/from"
+	printf '%s\n' "$3" >"$1/from/$2"
+}
+
 # Remember a hook this tool declined to run itself because a manifest registers
 # what it does. The original file stays where it was, and a tool that chains to
 # the repository's own `.git/hooks/<event>` after its own checks, as
@@ -768,10 +789,12 @@ migrate_existing() { # <root> <events> <manifests>
 		[ -f "$h" ] || continue
 		if declares_this_hook "$1" "$3" "$ev" "$h"; then
 			note_declined "$sd" "$ev" "$h"
+			note_source "$sd" "$ev" "$h"
 			printf 'the %s hook already here runs what a manifest declares, so it is registered once rather than kept as well\n' "$ev"
 			continue
 		fi
 		keep_existing "$sd" "$ev" "$h"
+		note_source "$sd" "$ev" "$h"
 		printf 'kept the %s hook that was already here, as 00-existing\n' "$ev"
 	done
 }
@@ -853,6 +876,7 @@ cmd_doctor() {
 		bad=1
 	fi
 
+	declared=""
 	manifests=$(find_manifests "$root")
 	# A clone-local manifest replaces a tracked one of its name whole, so what
 	# the tracked one declares is not owed an entry.
@@ -867,6 +891,7 @@ EOF
 		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
 			name=$(manifest_name "$root" "$m")
 			shadowed "$ev" "$name" "$m" && continue
+			declared="$declared $ev/$name "
 			if [ ! -f "$sd/entries/$ev/$name" ]; then
 				printf '%s declares [hooks.%s] and is not registered. Run `git shook install`.\n' "$m" "$ev"
 				bad=1
@@ -879,6 +904,17 @@ EOF
 	if [ -d "$sd/entries" ]; then
 		for ev in "$sd"/entries/*; do
 			[ -d "$ev" ] || continue
+			# An entry nothing declares runs on every commit and was left by a
+			# manifest that has gone: `--only` installs never prune, so this is
+			# the only place it shows.
+			for f in "$ev"/*; do
+				[ -f "$f" ] || continue
+				n=${f##*/}
+				[ "$n" = 00-existing ] && continue
+				case "$declared" in *" ${ev##*/}/$n "*) continue ;; esac
+				printf 'the %s entry of %s is declared by no manifest. Run `git shook install` without --only to remove it.\n' "$n" "${ev##*/}"
+				bad=1
+			done
 			e="$sd/hooks/${ev##*/}"
 			if [ ! -x "$e" ]; then
 				printf 'entries exist for %s with no dispatcher. Run `git shook install`.\n' "${ev##*/}"
@@ -928,7 +964,7 @@ cmd_uninstall() {
 	# The manifests a clone keeps in `manifests/` are declarations and not
 	# registry, and are whatever the operator or a tool put there, so they stay
 	# and the next `install` picks them up again.
-	rm -rf "$sd/hooks" "$sd/entries" "$sd/kept" "$sd/declined" "$sd/names"
+	rm -rf "$sd/hooks" "$sd/entries" "$sd/kept" "$sd/declined" "$sd/from" "$sd/names"
 	rmdir "$sd" 2>/dev/null || true
 	# And whatever an older git-shook left at the repository root, on the same
 	# terms `install` uses: a tracked one is somebody's committed file and not

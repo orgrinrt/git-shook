@@ -70,7 +70,7 @@ git shook install
 That reads every tracked `shook.toml`, prints the argument list each one would
 run, and registers them once it has been confirmed. `git shook list` prints what
 is registered and in what order, `git shook doctor` says whether what is
-declared and what is registered still agree, and `git shook uninstall` takes the
+declared and what is registered still agree, in both directions, and `git shook uninstall` takes the
 lot back out and restores whatever hook was at the event beforehand.
 
 `run` is an argument list rather than a command line. Nothing goes through a
@@ -116,7 +116,7 @@ An entry a manifest no longer declares stops running on the next `install`, whic
 clears the names the manifests answer to, and the names the last install recorded
 that nothing answers to now, before it writes them again. The first install after an upgrade has no record
 yet, so it clears every entry but `00-existing` that no manifest answers to, and
-says which. `uninstall`
+says which. Every name given to `--only` has to be a manifest, or the install is refused whole, and an `--only` install never prunes, so an entry whose manifest has gone shows up in `doctor` until a full install clears it. `uninstall`
 takes the registry out and leaves `manifests/` where it is.
 
 ## Example
@@ -207,6 +207,7 @@ anything added there will keep reading the manifests that exist now.
       mockspace
   kept/            whatever hook was at the event before, still running
   declined/        a copy of each hook left in place because a manifest registers what it does
+  from/            where each kept or declined hook was taken from
   manifests/       declarations only this clone has, read by install; never removed
 ```
 

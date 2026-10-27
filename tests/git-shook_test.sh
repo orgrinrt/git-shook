@@ -1156,3 +1156,65 @@ a_declined_hook_is_kept_again_once_no_manifest_registers_what_it_runs() {
     assert_contains "$(commit_all "$w" second)" THEIRS-TOOL-RAN
     rm -rf "$w"
 }
+
+#[test]
+a_declined_hook_from_another_hooks_directory_is_kept_again_from_where_it_was() {
+    # the hook lives under the old `core.hooksPath`, not `.git/hooks`, so the
+    # revival has to look where it was taken from
+    local w; w="$(a_repo)"
+    printf '#!/bin/sh\necho THEIRS-TOOL-RAN\n' > "$w/tool"
+    chmod +x "$w/tool"
+    mkdir -p "$w/.githooks"
+    printf '#!/bin/sh\nexec %s "$@"\n' "$w/tool" > "$w/.githooks/pre-commit"
+    chmod +x "$w/.githooks/pre-commit"
+    git -C "$w" config core.hooksPath .githooks
+    a_local_manifest "$w" mine pre-commit "$w/tool"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/declined/pre-commit"
+
+    a_local_manifest "$w" mine pre-push true
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)"
+    assert_contains "$out" "kept the pre-commit hook again"
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/00-existing"
+    rm -rf "$w"
+}
+
+#[test]
+doctor_names_an_entry_no_manifest_declares_and_an_only_install_does_not_prune_it() {
+    local w; w="$(a_repo)"
+    a_local_manifest "$w" theirs pre-commit true
+    a_local_manifest "$w" mine pre-push true
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    rm "$w/.git/shook/manifests/theirs.toml"
+    ( cd "$w" && "$SHOOK" install --yes --only mine >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/theirs"
+    local out; out="$(cd "$w" && "$SHOOK" doctor 2>&1)" || true
+    assert_contains "$out" "the theirs entry of pre-commit is declared by no manifest"
+    assert_fails sh -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_fails test -e "$w/.git/shook/entries/pre-commit/theirs"
+    assert_ok sh -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
+    rm -rf "$w"
+}
+
+#[test]
+an_only_naming_a_manifest_nothing_answers_to_is_refused_whole() {
+    local w; w="$(a_repo)"
+    a_local_manifest "$w" mine pre-push true
+    assert_fails sh -c "cd '$w' && '$SHOOK' install --yes --only mine --only typo >/dev/null 2>&1"
+    assert_fails test -e "$w/.git/shook/entries/pre-push/mine"
+    rm -rf "$w"
+}
+
+#[test]
+a_hand_placed_entry_a_full_install_removes_is_said_to_be() {
+    local w; w="$(a_repo)"
+    a_local_manifest "$w" mine pre-push true
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    rm "$w/.git/shook/names"
+    printf '.\ntrue\n' > "$w/.git/shook/entries/pre-push/zz-mine"
+    ( cd "$w" && "$SHOOK" install --yes --only mine >/dev/null )
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)"
+    assert_contains "$out" "removed the zz-mine entry"
+    rm -rf "$w"
+}
