@@ -30,6 +30,13 @@ Nothing is installed until
 .B install
 is run, and manifests are read only then, never when a hook fires. A manifest
 arriving through a merge therefore does nothing until somebody looks at it.
+.PP
+A declaration that only one clone has goes in
+.I <git-dir>/shook/manifests/<name>.toml
+in the same format. It is read beside the tracked manifests, runs from the
+repository root, and replaces a tracked manifest of the same name.
+.B git shook uninstall
+leaves that directory in place.
 .SH COMMANDS
 .TP
 .B install " [\-\-yes]"

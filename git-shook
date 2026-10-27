@@ -237,17 +237,42 @@ shook_dir() { # <root>
 # `find`, so a manifest has to be tracked to be found: an untracked one is
 # somebody's scratch file and is not something to wire into a hook.
 find_manifests() { # <root>
+	# The clone's own manifests come first, as absolute paths, so they win a
+	# name a tracked manifest also uses. They sit in the git directory beside
+	# the registry they feed, which makes them local to this clone and not
+	# something a merge can bring in: whoever put one there is the operator,
+	# and `install` is still the step that says yes to it.
+	_ld="$(shook_dir "$1")/manifests"
+	if [ -d "$_ld" ]; then
+		for _f in "$_ld"/*.toml; do
+			[ -f "$_f" ] && printf '%s\n' "$_f"
+		done
+	fi
 	git -C "$1" ls-files --full-name -- 'shook.toml' '*/shook.toml' 2>/dev/null | sort
+}
+
+# The file a manifest path names: a clone-local one is already absolute, a
+# tracked one is relative to the repository root.
+mf() { # <root> <manifest path>
+	case $2 in
+	/*) printf '%s' "$2" ;;
+	*) printf '%s/%s' "$1" "$2" ;;
+	esac
 }
 
 # The name a manifest registers under, which decides its filename in the entry
 # directory and therefore where it falls in the run order.
 manifest_name() { # <root> <relative manifest path>
-	n=$(manifest_read name "$1/$2")
+	n=$(manifest_read name "$(mf "$1" "$2")")
 	if [ -z "$n" ]; then
-		n=$(dirname "$2")
-		[ "$n" = "." ] && n=$(basename "$1")
-		n=$(basename "$n")
+		case $2 in
+		/*) n=$(basename "$2" .toml) ;;
+		*)
+			n=$(dirname "$2")
+			[ "$n" = "." ] && n=$(basename "$1")
+			n=$(basename "$n")
+			;;
+		esac
 	fi
 	printf '%s' "$n"
 }
@@ -289,18 +314,40 @@ check_event() { # <manifest> <event>
 # second overwrite the first, with both shown in the listing as if both had
 # been registered.
 SEEN=""
+LOCALS=""
 seen_name() { # <event> <name> <manifest>
 	key="$1/$2"
 	case " $SEEN " in
 	*" $key "*) die "$3: $2 is already registered for $1 by another manifest; give one of them a different name" ;;
 	esac
 	SEEN="$SEEN $key"
+	case $3 in /*) LOCALS="$LOCALS $key" ;; esac
+}
+
+# Whether a tracked manifest's hook is the one a clone-local manifest of the
+# same name already declares for the same event. The clone's own declaration is
+# the more specific, and a tool that generates its local manifest from a wider
+# source than the tracked file can see (a layer that is not committed) has to be
+# able to say the same thing there without the two registering twice. The local
+# manifests are read first, so by the time a tracked one is asked about this,
+# `LOCALS` holds them.
+shadowed() { # <event> <name> <manifest>
+	case $3 in /*) return 1 ;; esac
+	case " $LOCALS " in *" $1/$2 "*) return 0 ;; esac
+	return 1
 }
 
 # Where a manifest's hooks run, relative to the repository root. Empty for one
 # at the root, which is why nothing here may go through a whitespace-separated
 # field: an empty value has to survive being passed around.
 manifest_dir() { # <relative manifest path>
+	case $1 in
+	/*)
+		# a clone-local manifest runs from the repository root
+		printf ''
+		return 0
+		;;
+	esac
 	d=$(dirname "$1")
 	[ "$d" = "." ] && d=""
 	printf '%s' "$d"
@@ -310,7 +357,7 @@ manifest_dir() { # <relative manifest path>
 collect_events() { # <root> <manifests>
 	evs=""
 	for m in $2; do
-		for ev in $(manifest_read events "$1/$m"); do
+		for ev in $(manifest_read events "$(mf "$1" "$m")"); do
 			case " $evs " in
 			*" $ev "*) ;;
 			*) evs="$evs $ev" ;;
@@ -342,7 +389,7 @@ cmd_install() {
 
 	root=$(repo_root)
 	manifests=$(find_manifests "$root")
-	[ -n "$manifests" ] || die "no tracked shook.toml anywhere in $root"
+	[ -n "$manifests" ] || die "no tracked shook.toml anywhere in $root, and none in $(shook_dir "$root")/manifests"
 
 	# Two passes over the manifests rather than one pass into a plan file. The
 	# encoding that would need is a field separator that survives an empty
@@ -356,10 +403,14 @@ cmd_install() {
 		name=$(manifest_name "$root" "$m")
 		check_name "$m" "$name"
 		wd=$(manifest_dir "$m")
-		for ev in $(manifest_read events "$root/$m"); do
+		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
 			check_event "$m" "$ev"
-			argv=$(manifest_read argv "$root/$m" "$ev")
+			argv=$(manifest_read argv "$(mf "$root" "$m")" "$ev")
 			[ -n "$argv" ] || die "$m: [hooks.$ev] has no run"
+			if shadowed "$ev" "$name" "$m"; then
+				printf '  %-14s %-16s replaced by this clone'"'"'s own manifest of that name\n' "$ev" "$name"
+				continue
+			fi
 			seen_name "$ev" "$name" "$m"
 			printf '  %-14s %-16s %s' "$ev" "$name" "$(show_argv "$argv")"
 			[ -n "$wd" ] && printf ' (in %s)' "$wd"
@@ -392,14 +443,27 @@ cmd_install() {
 		chmod +x "$sd/hooks/$ev"
 	done
 
+	# An entry a manifest no longer declares stops running on the next install,
+	# so a hook taken out of a manifest is not left behind in the registry.
+	# Only the names a manifest answers to are cleared; `00-existing` and any
+	# entry somebody placed by hand are not.
+	for m in $manifests; do
+		name=$(manifest_name "$root" "$m")
+		check_name "$m" "$name"
+		for f in "$sd"/entries/*/"$name"; do
+			[ -f "$f" ] && rm -f "$f"
+		done
+	done
+
 	for m in $manifests; do
 		name=$(manifest_name "$root" "$m")
 		check_name "$m" "$name"
 		wd=$(manifest_dir "$m")
-		for ev in $(manifest_read events "$root/$m"); do
+		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
+			shadowed "$ev" "$name" "$m" && continue
 			{
 				printf '%s\n' "$wd"
-				manifest_read argv "$root/$m" "$ev"
+				manifest_read argv "$(mf "$root" "$m")" "$ev"
 			} >"$sd/entries/$ev/$name"
 		done
 	done
@@ -461,7 +525,7 @@ cmd_install() {
 # widens what counts as a match.
 declares_this_hook() { # <root> <manifests> <event> <hook file>
 	for _m in $2; do
-		_argv=$(manifest_read argv "$1/$_m" "$3")
+		_argv=$(manifest_read argv "$(mf "$1" "$_m")" "$3")
 		[ -n "$_argv" ] || continue
 		printf '%s\n' "$_argv" | grep -q '[[:space:]]' && continue
 		_cmd=$(printf '%s\n' "$_argv" | tr '\n' ' ')
@@ -623,7 +687,7 @@ cmd_doctor() {
 	fi
 
 	for m in $(find_manifests "$root"); do
-		for ev in $(manifest_read events "$root/$m"); do
+		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
 			name=$(manifest_name "$root" "$m")
 			if [ ! -f "$sd/entries/$ev/$name" ]; then
 				printf '%s declares [hooks.%s] and is not registered. Run `git shook install`.\n' "$m" "$ev"
@@ -681,7 +745,11 @@ cmd_uninstall() {
 		done
 	fi
 	git -C "$root" config --unset core.hooksPath 2>/dev/null || true
-	rm -rf "$sd"
+	# The manifests a clone keeps in `manifests/` are declarations and not
+	# registry, and are whatever the operator or a tool put there, so they stay
+	# and the next `install` picks them up again.
+	rm -rf "$sd/hooks" "$sd/entries" "$sd/kept"
+	rmdir "$sd" 2>/dev/null || true
 	# And whatever an older git-shook left at the repository root, on the same
 	# terms `install` uses: a tracked one is somebody's committed file and not
 	# this tool's to delete.
@@ -726,6 +794,10 @@ a script and names it, which puts it in a diff where somebody can object to it.
 
 Discovery happens when you run `install`, never when a hook fires, so a manifest
 arriving through a merge does nothing until you look at it and say yes.
+
+A declaration only this clone has goes in <git-dir>/shook/manifests/<name>.toml,
+in the same format. install reads it beside the tracked ones, it runs from the
+repository root, and it replaces a tracked manifest of the same name.
 HELPTEXT
 }
 

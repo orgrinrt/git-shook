@@ -741,3 +741,136 @@ a_line_of_somebody_elses_beside_the_command_keeps_the_hook() {
 exec @REPO@/tool "$@"')"
     assert_eq "$n" 2
 }
+
+# A manifest in the git directory, which is where a tool puts a declaration
+# that only this clone has: a layer of configuration that is not committed.
+a_local_manifest() { # <repo> <name> <event> <argv...>
+    local w="$1" name="$2" ev="$3"; shift 3
+    local d="$w/.git/shook/manifests"
+    mkdir -p "$d"
+    {
+        printf 'name = "%s"\n\n[hooks.%s]\nrun = [' "$name" "$ev"
+        local first=1 a
+        for a in "$@"; do
+            [[ $first -eq 0 ]] && printf ', '
+            printf '"%s"' "${a//\"/\\\"}"
+            first=0
+        done
+        printf ']\n'
+    } > "$d/$name.toml"
+}
+
+#[test]
+a_manifest_in_the_git_directory_registers_and_runs_with_no_tracked_one() {
+    local w; w="$(a_repo)"
+    printf 'x\n' > "$w/f.txt"
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" mine pre-commit sh -c 'echo LOCAL-RAN'
+
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/mine"
+
+    printf 'y\n' > "$w/f.txt"
+    local out; out="$(commit_all "$w" second)"
+    assert_contains "$out" LOCAL-RAN
+    rm -rf "$w"
+}
+
+#[test]
+a_local_manifest_runs_from_the_repository_root() {
+    local w; w="$(a_repo)"
+    printf 'x\n' > "$w/f.txt"
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" mine pre-commit sh -c 'echo WD-IS-$(basename "$(pwd)")'
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    printf 'y\n' > "$w/f.txt"
+    local out; out="$(commit_all "$w" second)"
+    assert_contains "$out" "WD-IS-$(basename "$w")"
+    rm -rf "$w"
+}
+
+#[test]
+a_local_manifest_replaces_a_tracked_one_of_the_same_name() {
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" mine sh -c 'echo TRACKED-RAN'
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" mine pre-commit sh -c 'echo LOCAL-RAN'
+
+    local plan; plan="$(cd "$w" && "$SHOOK" install --yes)"
+    assert_contains "$plan" "replaced by this clone's own manifest"
+
+    printf 'y\n' > "$w/f.txt"
+    local out; out="$(commit_all "$w" second)"
+    assert_contains "$out" LOCAL-RAN
+    assert_not_contains "$out" TRACKED-RAN
+    assert_eq "$(ls "$w/.git/shook/entries/pre-commit" | wc -l | tr -d ' ')" 1
+    rm -rf "$w"
+}
+
+#[test]
+a_local_manifest_under_another_name_runs_beside_a_tracked_one() {
+    # the control for the replacement above: it is the name that decides, and
+    # two manifests under different names both run
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" theirs sh -c 'echo TRACKED-RAN'
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" mine pre-commit sh -c 'echo LOCAL-RAN'
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    printf 'y\n' > "$w/f.txt"
+    local out; out="$(commit_all "$w" second)"
+    assert_contains "$out" LOCAL-RAN
+    assert_contains "$out" TRACKED-RAN
+    rm -rf "$w"
+}
+
+#[test]
+a_hook_taken_out_of_a_manifest_stops_running_on_the_next_install() {
+    local w; w="$(a_repo)"
+    printf 'x\n' > "$w/f.txt"
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" mine pre-commit sh -c 'echo STILL-RAN'
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    printf 'y\n' > "$w/f.txt"
+    assert_contains "$(commit_all "$w" second)" STILL-RAN
+
+    # the same manifest now declares a different event only
+    a_local_manifest "$w" mine pre-push true
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_fails test -e "$w/.git/shook/entries/pre-commit/mine"
+    assert_ok test -f "$w/.git/shook/entries/pre-push/mine"
+
+    printf 'z\n' > "$w/f.txt"
+    assert_not_contains "$(commit_all "$w" third)" STILL-RAN
+    rm -rf "$w"
+}
+
+#[test]
+uninstall_removes_the_registry_and_keeps_the_local_manifests() {
+    local w; w="$(a_repo)"
+    printf 'x\n' > "$w/f.txt"
+    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" mine pre-commit true
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    ( cd "$w" && "$SHOOK" uninstall >/dev/null )
+    assert_fails test -e "$w/.git/shook/entries"
+    assert_fails test -e "$w/.git/shook/hooks"
+    assert_ok test -f "$w/.git/shook/manifests/mine.toml"
+    rm -rf "$w"
+}
+
+#[test]
+doctor_reports_a_local_manifest_that_was_never_registered() {
+    local w; w="$(a_repo)"
+    a_manifest_at "$w" "" theirs true
+    commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok bash -c "cd '$w' && '$SHOOK' doctor >/dev/null"
+
+    a_local_manifest "$w" mine pre-push true
+    local out; out="$(cd "$w" && "$SHOOK" doctor 2>&1 || true)"
+    assert_contains "$out" "declares [hooks.pre-push] and is not registered"
+    rm -rf "$w"
+}

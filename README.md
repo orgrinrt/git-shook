@@ -91,6 +91,19 @@ inside a monorepo does not have to know where it sits. `name` decides the
 filename in the registry and therefore the order, which is sorted; leaving it
 out uses the directory's name.
 
+A declaration that only one clone has goes in `.git/shook/manifests/<name>.toml`,
+in the same format. `install` reads those beside the tracked ones, they run from
+the repository root, and being in the git directory they are never committed and
+never arrive through a merge: whoever put one there is whoever runs `install`.
+It is the place for a tool that generates its registration from something the
+repository does not track, a layer of local configuration for instance, and wants
+it to reach the same dispatcher as everything else. Where a local manifest and a
+tracked one share a `name`, the local one is what registers, and the plan says so.
+
+An entry a manifest no longer declares stops running on the next `install`, which
+clears the names the manifests answer to before it writes them again. `uninstall`
+takes the registry out and leaves `manifests/` where it is.
+
 ## Example
 
 Two tools wanting the same event is the case the whole thing exists for. A
@@ -178,6 +191,7 @@ anything added there will keep reading the manifests that exist now.
       ante         one argument per line, the first being the working directory
       mockspace
   kept/            whatever hook was at the event before, still running
+  manifests/       declarations only this clone has, read by install; never removed
 ```
 
 All of it inside the git directory, so none of it is committed and nobody has to
