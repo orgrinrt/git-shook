@@ -433,6 +433,17 @@ EOF
 			[ "$_e" = "$_k" ] && all_events="$all_events $_e"
 		done
 	done
+	# And an event no manifest declares at all but where a hook already sits: git
+	# stops reading that directory for it too, so it is adopted and given a
+	# dispatcher like the rest, or it would stop running with nothing said.
+	_od=$(old_hooks_dir "$root")
+	if [ -n "$_od" ]; then
+		for _k in $KNOWN_EVENTS; do
+			[ -f "$_od/$_k" ] || continue
+			case " $all_events " in *" $_k "*) continue ;; esac
+			all_events="$all_events $_k"
+		done
+	fi
 	if [ -n "$only" ]; then
 		kept=""
 		while IFS= read -r m; do
@@ -761,6 +772,45 @@ keep_existing() { # <shook dir> <event> <hook file>
 	} >"$1/entries/$2/00-existing"
 }
 
+# The directory git read hooks from before this install: the old
+# `core.hooksPath`, or git's own when there was none. Empty when that was this
+# tool's dispatcher, which holds nothing to adopt.
+old_hooks_dir() { # <root>
+	_sd=$(shook_dir "$1")
+	_old=$(git -C "$1" config --get core.hooksPath || true)
+	case $_old in
+	"$_sd/hooks" | .shook/hooks) return 0 ;;
+	# An absolute hooksPath is already a path and must not be joined to the
+	# root, which would produce `/repo//etc/git/hooks`.
+	/*) printf '%s\n' "$_old" ;;
+	"")
+		# `.git` is a file rather than a directory in a linked worktree and
+		# in a submodule, so the hooks directory is not `$root/.git/hooks`
+		# there. Ask git where it is instead of assuming.
+		_from=$(git -C "$1" rev-parse --git-path hooks 2>/dev/null) || _from="$1/.git/hooks"
+		case $_from in
+		/*) ;;
+		*) _from="$1/$_from" ;;
+		esac
+		printf '%s\n' "$_from"
+		;;
+	*) printf '%s\n' "$1/$_old" ;;
+	esac
+}
+
+# Where a kept hook for `<event>` goes back to: the directory recorded when it
+# was taken, else git's own hooks directory.
+old_hooks_dir_recorded() { # <root> <shook dir> <event>
+	if [ -f "$2/from/$3" ]; then
+		_src=$(cat "$2/from/$3")
+		dirname "$_src"
+		return 0
+	fi
+	_c=$(git -C "$1" rev-parse --git-common-dir 2>/dev/null) || _c="$1/.git"
+	case $_c in /*) ;; *) _c="$1/$_c" ;; esac
+	printf '%s\n' "$_c/hooks"
+}
+
 # An existing hook at an event we are about to take is moved to
 # `<git-dir>/shook/entries/<event>/00-existing` so it still runs, first, and
 # uninstall can put it back where it was.
@@ -778,23 +828,9 @@ migrate_existing() { # <root> <events> <manifests>
 		migrate_legacy_kept "$1"
 		return 0
 	fi
+	[ -n "$old" ] && [ ! -f "$sd/oldpath" ] && { mkdir -p "$sd"; printf '%s\n' "$old" >"$sd/oldpath"; }
 
-	case $old in
-	# An absolute hooksPath is already a path and must not be joined to the
-	# root, which would produce `/repo//etc/git/hooks`.
-	/*) from=$old ;;
-	"")
-		# `.git` is a file rather than a directory in a linked worktree and
-		# in a submodule, so the hooks directory is not `$root/.git/hooks`
-		# there. Ask git where it is instead of assuming.
-		from=$(git -C "$1" rev-parse --git-path hooks 2>/dev/null) || from="$1/.git/hooks"
-		case $from in
-		/*) ;;
-		*) from="$1/$from" ;;
-		esac
-		;;
-	*) from="$1/$old" ;;
-	esac
+	from=$(old_hooks_dir "$1")
 
 	for ev in $2; do
 		h="$from/$ev"
@@ -964,22 +1000,27 @@ cmd_uninstall() {
 	if [ -d "$sd/kept" ]; then
 		for k in "$sd"/kept/*; do
 			[ -f "$k" ] || continue
-			# Same as the migration: ask git where hooks live rather than
-			# assuming `.git/hooks`, which is wrong in a linked worktree and
-			# in a submodule.
-			hd=$(git -C "$root" rev-parse --git-path hooks 2>/dev/null) || hd="$root/.git/hooks"
-			case $hd in /*) ;; *) hd="$root/$hd" ;; esac
+			# Back to the directory it was taken from, which is the old
+			# `core.hooksPath` as often as git's own: asking git now would answer
+			# with this tool's dispatcher directory, which is removed below.
+			ev=${k##*/}
+			hd=$(old_hooks_dir_recorded "$root" "$sd" "$ev")
 			mkdir -p "$hd"
-			cp "$k" "$hd/${k##*/}"
-			chmod +x "$hd/${k##*/}"
-			printf 'put back the %s hook that was here before\n' "${k##*/}"
+			cp "$k" "$hd/$ev"
+			chmod +x "$hd/$ev"
+			printf 'put back the %s hook that was here before\n' "$ev"
 		done
 	fi
-	git -C "$root" config --unset core.hooksPath 2>/dev/null || true
+	# And the key goes back to whoever held it, if anybody did.
+	if [ -f "$sd/oldpath" ]; then
+		git -C "$root" config core.hooksPath "$(cat "$sd/oldpath")"
+	else
+		git -C "$root" config --unset core.hooksPath 2>/dev/null || true
+	fi
 	# The manifests a clone keeps in `manifests/` are declarations and not
 	# registry, and are whatever the operator or a tool put there, so they stay
 	# and the next `install` picks them up again.
-	rm -rf "$sd/hooks" "$sd/entries" "$sd/kept" "$sd/declined" "$sd/from" "$sd/names"
+	rm -rf "$sd/hooks" "$sd/entries" "$sd/kept" "$sd/declined" "$sd/from" "$sd/oldpath" "$sd/names"
 	rmdir "$sd" 2>/dev/null || true
 	# And whatever an older git-shook left at the repository root, on the same
 	# terms `install` uses: a tracked one is somebody's committed file and not
@@ -987,7 +1028,7 @@ cmd_uninstall() {
 	if [ -d "$root/.shook" ] && [ -z "$(git -C "$root" ls-files -- .shook)" ]; then
 		rm -rf "$root/.shook"
 	fi
-	printf 'removed the registry in %s and cleared core.hooksPath\n' "$sd"
+	printf 'removed the registry in %s and put core.hooksPath back\n' "$sd"
 }
 
 # ---------------------------------------------------------------------------

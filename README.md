@@ -109,8 +109,10 @@ the flag for more) and leaves every other one as it was, unregistered or not. A
 tool that generates its own declaration passes its own name, so its `--yes` is
 the consent for what it wrote and a tracked manifest that arrived through a merge
 still waits to be looked at. Taking `core.hooksPath` stops git reading the old
-hooks directory for every event, so a hook already there at any event a manifest
-declares is kept as `00-existing`, named or not.
+hooks directory for every event, so a hook already there at any event is kept as
+`00-existing` and the event gets a dispatcher, whether or not a manifest declares
+it, and named or not. `uninstall` puts each such hook back in the directory it
+came from and sets `core.hooksPath` back to what it was.
 
 An entry a manifest no longer declares stops running on the next `install`, which
 clears the names the manifests answer to, and the names the last install recorded
@@ -208,6 +210,7 @@ anything added there will keep reading the manifests that exist now.
   kept/            whatever hook was at the event before, still running
   declined/        a copy of each hook left in place because a manifest registers what it does
   from/            where each kept or declined hook was taken from
+  oldpath          the `core.hooksPath` that was set before the install, given back by uninstall
   manifests/       declarations only this clone has, read by install; never removed
 ```
 

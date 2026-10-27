@@ -1252,3 +1252,52 @@ doctor_leaves_an_entry_placed_by_hand_alone() {
     assert_ok sh -c "cd '$w' && '$SHOOK' doctor >/dev/null 2>&1"
     rm -rf "$w"
 }
+
+#[test]
+uninstall_restores_a_hook_deleted_in_the_meantime_and_the_old_key() {
+    # the old hook lived under another `core.hooksPath`; the copy in the
+    # original directory is gone by the time of the uninstall, so only a real
+    # restore brings it back, and the key goes back to where it was
+    local w; w="$(a_repo)"
+    mkdir -p "$w/.githooks"
+    printf '#!/bin/sh\necho THE-OLD-HOOK\n' > "$w/.githooks/pre-commit"
+    chmod +x "$w/.githooks/pre-commit"
+    git -C "$w" config core.hooksPath .githooks
+    a_manifest_at "$w" "" alpha sh -c 'echo x'
+    commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    rm "$w/.githooks/pre-commit"
+    ( cd "$w" && "$SHOOK" uninstall >/dev/null )
+
+    assert_contains "$(cat "$w/.githooks/pre-commit")" THE-OLD-HOOK
+    assert_eq "$(git -C "$w" config --get core.hooksPath)" ".githooks"
+    rm -rf "$w"
+}
+
+#[test]
+uninstall_restores_into_gits_own_directory_when_that_is_where_it_was() {
+    local w; w="$(a_repo)"
+    printf '#!/bin/sh\necho THE-OLD-HOOK\n' > "$w/.git/hooks/pre-commit"
+    chmod +x "$w/.git/hooks/pre-commit"
+    a_manifest_at "$w" "" alpha sh -c 'echo x'
+    commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    rm "$w/.git/hooks/pre-commit"
+    ( cd "$w" && "$SHOOK" uninstall >/dev/null )
+
+    assert_contains "$(cat "$w/.git/hooks/pre-commit")" THE-OLD-HOOK
+    assert_fails git -C "$w" config --get core.hooksPath
+    rm -rf "$w"
+}
+
+#[test]
+a_hook_at_an_event_no_manifest_declares_keeps_running_when_the_key_is_taken() {
+    local w; w="$(a_repo)"
+    printf '#!/bin/sh\necho PRE-PUSH-GATE\n' > "$w/.git/hooks/pre-push"
+    chmod +x "$w/.git/hooks/pre-push"
+    a_local_manifest "$w" mine pre-commit true
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/pre-push/00-existing"
+    assert_ok test -x "$w/.git/shook/hooks/pre-push"
+    rm -rf "$w"
+}
