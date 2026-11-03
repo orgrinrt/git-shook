@@ -1,50 +1,21 @@
 # `git-shook`
 
-<div align="center" style="text-align: center;">
+> A hook dispatcher for git, one per event with a registry beside it, so several tools can share a hook instead of replacing each other. A single POSIX shell script.
 
-[![GitHub Stars](https://img.shields.io/github/stars/orgrinrt/git-shook.svg)](https://github.com/orgrinrt/git-shook/stargazers)
-[![GitHub Issues](https://img.shields.io/github/issues/orgrinrt/git-shook.svg)](https://github.com/orgrinrt/git-shook/issues)
-![License](https://img.shields.io/github/license/orgrinrt/git-shook?color=%23009689)
+Git runs one program per hook event, which means whichever tool installed last owns `pre-commit` and the one before it is gone without any message. git-shook puts a dispatcher at the event and lets every tool register next to the others, so a repository can have a formatter, a linter and a header tool on the same commit without any of them knowing about the rest.
 
-> One dispatcher per git hook event and a registry beside it, so several tools can hold one event instead of each replacing the last. A single POSIX shell script, and hooks that shook on it.
-
-</div>
-
-Git runs one program per hook event, so whichever tool installed last owns
-`pre-commit` and the one that installed before it is simply gone, with nothing
-printed and nothing to notice until the check it was doing stops happening.
-git-shook puts one dispatcher at the event and gives every tool a place to
-register beside the others, which is how a repository ends up with a formatter,
-a linter and a header tool on the same commit without any of them knowing the
-rest are there.
-
-A project says what it wants run in a `shook.toml` that lives in the tree and
-gets committed, and each clone activates that once, by hand. The split matters:
-what arrives with a clone is a description, and what runs is generated from it
-locally by somebody who read it, since git will not take a hooks path out of a
-repository and is right not to.
-
-It is a single POSIX shell script with no dependencies, which is a constraint
-rather than a preference. What sits at a hook event runs on every commit for
-everybody who clones the repository, including people who have none of the
-toolchain that put it there, so it may not reach for anything that could be
-missing.
+A project says what it wants run in a `shook.toml` that is committed with the tree, and each clone activates it once by hand. What arrives with a clone is only a description, and what actually runs is generated locally by somebody who has read it, since git does not take a hooks path from a repository and is right not to. The script has no dependencies, because it sits in front of every commit for everybody who clones the repository, including people who have none of the toolchain that put it there.
 
 ## Usage
 
-`git shook` works through anything on `PATH` called `git-shook`, so the script
-on its own is enough:
+`git shook` works through anything on `PATH` called `git-shook`, so the script alone is enough.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/orgrinrt/git-shook/main/git-shook -o ~/.local/bin/git-shook
 chmod +x ~/.local/bin/git-shook
 ```
 
-The installer additionally places the man page and the shell completions, which
-a single file cannot do for itself, and the man page is worth having: git
-rewrites `git shook --help` into `git help shook` before the program is ever
-reached, so without it that spelling answers `No manual entry` whatever the tool
-would have printed.
+The installer also places the man page and the completions, which a single file cannot do. The man page matters for `git shook --help`, because git rewrites that into `git help shook` before the script is reached, and without a man page it answers `No manual entry`.
 
 ```bash
 git clone https://github.com/orgrinrt/git-shook && cd git-shook
@@ -52,7 +23,7 @@ git clone https://github.com/orgrinrt/git-shook && cd git-shook
 ./install /usr/local      # or wherever
 ```
 
-A manifest declares what the repository wants run, and sits anywhere in the tree:
+A manifest can sit anywhere in the tree.
 
 ```toml
 name = "ante"
@@ -61,207 +32,26 @@ name = "ante"
 run = ["ante", "fix"]
 ```
 
-Then, once per clone:
+Then once per clone, `git shook install`, which reads every tracked `shook.toml`, prints the argument list each one would run and registers them after you confirm.
 
-```bash
-git shook install
-```
+| Command | What it does |
+|---|---|
+| `git shook install` | register what the manifests declare, `--yes` to skip the confirmation, `--only <name>` to take just that manifest |
+| `git shook list` | print what is registered per event, in running order |
+| `git shook doctor` | check that what is declared and what is registered agree |
+| `git shook uninstall` | remove the registry and put back the hook that was there before |
 
-That reads every tracked `shook.toml`, prints the argument list each one would
-run, and registers them once it has been confirmed. `git shook list` prints what
-is registered and in what order, `git shook doctor` says whether what is
-declared and what is registered still agree, in both directions, and `git shook uninstall` takes the
-lot back out and restores whatever hook was at the event beforehand.
+## Manifests
 
-`run` is an argument list rather than a command line. Nothing goes through a
-shell, so there is no quoting to get wrong and no way for an argument to become
-a second command. A hook wanting a pipe or a redirect ships a script and names
-it:
+`run` is an argument list and not a command line, so nothing goes through a shell and an argument cannot turn into a second command. A hook that needs a pipe or a redirect ships a script and names it, as in `run = ["sh", "scripts/before-push.sh"]`, which keeps what actually runs in a file that shows up in a diff. Every hook runs with its own manifest's directory as the working directory, so a manifest in `mock/` names paths relative to `mock/`, and `name` decides the entry's filename and therefore its place in the order.
 
-```toml
-[hooks.pre-push]
-run = ["sh", "scripts/before-push.sh"]
-```
+Entries run in sorted order and stop at the first failure. There is no priority field, because the order that matters is that something which rewrites the tree and stages it runs before something that checks what is staged, and where the alphabet gets that wrong the fix is to rename one of them. A declaration only one clone wants goes in `.git/shook/manifests/<name>.toml`, same format, and is read by `install` beside the tracked ones.
 
-which puts the thing that actually runs in a file that shows up in a diff.
+Taking over `core.hooksPath` makes git stop reading the old hooks directory, so a hook that was already at an event is kept and runs first, and `uninstall` puts it back where it came from. Everything git-shook writes lives under `.git/shook/`, so none of it is committed. Hooks belong to a repository and never to a directory, so several manifests in one tree all fire on every commit, and one that only cares about its own subtree filters the staged paths itself. An argument containing a newline cannot be represented, since an entry file holds one argument per line.
 
-Each hook runs with its own manifest's directory as the working directory, so a
-manifest at `mock/shook.toml` names paths relative to `mock/` and a project
-inside a monorepo does not have to know where it sits. `name` decides the
-filename in the registry and therefore the order, which is sorted; leaving it
-out uses the directory's name.
+## Contributing
 
-A declaration that only one clone has goes in `.git/shook/manifests/<name>.toml`,
-in the same format. `install` reads those beside the tracked ones, they run from
-the repository root, and being in the git directory they are never committed and
-never arrive through a merge: whoever put one there is whoever runs `install`.
-It is the place for a tool that generates its registration from something the
-repository does not track, a layer of local configuration for instance, and wants
-it to reach the same dispatcher as everything else. Where a local manifest and a
-tracked one share a `name`, the local one is what registers in its entirety, so an event only the tracked
-one declares is not registered, and the plan says so. A clone whose path contains
-whitespace holds local manifests like any other, and so does a manifest whose
-file name or directory carries whitespace or glob characters: the list is read a
-path to a line and never split into words.
-
-`install --yes --only <name>` registers only the manifests of that name (repeat
-the flag for more) and leaves every other one as it was, unregistered or not. A
-tool that generates its own declaration passes its own name, so its `--yes` is
-the consent for what it wrote and a tracked manifest that arrived through a merge
-still waits to be looked at. Taking `core.hooksPath` stops git reading the old
-hooks directory for every event, so a hook already there at any event is kept as
-`00-existing` and the event gets a dispatcher, whether or not a manifest declares
-it, and named or not. `uninstall` puts each such hook back in the directory it
-came from and sets `core.hooksPath` back to what it was.
-
-An entry a manifest no longer declares stops running on the next `install`, which
-clears the names the manifests answer to, and the names the last install recorded
-that nothing answers to now, before it writes them again. The first install after an upgrade has no record
-yet, so it clears every entry but `00-existing` that no manifest answers to, and
-says which. Every name given to `--only` has to be a manifest, or the install is refused whole, and an `--only` install never prunes, so an entry whose manifest has gone shows up in `doctor` until a full install clears it. `uninstall`
-takes the registry out and leaves `manifests/` where it is.
-
-## Example
-
-Two tools wanting the same event is the case the whole thing exists for. A
-repository that rewrites source headers and also lints what is staged declares
-both, in whichever directories they belong to:
-
-```toml
-# shook.toml
-name = "ante"
-
-[hooks.pre-commit]
-run = ["ante", "fix"]
-```
-
-```toml
-# mock/shook.toml
-name = "mockspace"
-
-[hooks.pre-commit]
-run = ["cargo", "mock", "lint", "--staged"]
-
-[hooks.pre-push]
-run = ["cargo", "mock", "gate"]
-```
-
-After `git shook install` the registry holds both, sorted, and a commit runs
-`ante fix` from the repository root and then `cargo mock lint --staged` from
-`mock/`:
-
-```
-$ git shook list
-pre-commit
-  ante             ante fix
-  mockspace        cargo mock lint --staged  (in mock)
-pre-push
-  mockspace        cargo mock gate  (in mock)
-
-core.hooksPath: /home/me/work/thing/.git/shook/hooks
-```
-
-The order is the one that matters here rather than one that happens to be
-convenient: `ante` rewrites the tree and stages what it changed, and the lint
-then reads a tree the commit will actually contain. Reverse them and the lint
-certifies something else.
-
-## Motivation
-
-Every tool that wants a hook has the same three options and all of them are bad.
-It can write `.git/hooks/pre-commit` and destroy whatever was there, it can take
-`core.hooksPath` and destroy rather more, or it can print instructions and hope.
-The first two fail silently, which is the part worth fixing, because a hook that
-has been replaced behaves exactly like a hook that is passing.
-
-The activation being per clone is git's own reasoning and not a rough edge here.
-A hooks path read out of the repository would mean that cloning a repository
-executes whatever that repository says to execute, so the setting lives in
-`.git/config` where a clone owns it, and running `git shook install` is the
-consent a committed file could never give. The same reasoning decides when
-manifests are read: discovery happens during `install` and never when a hook
-fires, so a manifest arriving through a merge does nothing until somebody looks
-at it and agrees, and a pull request cannot add a file that runs on a reviewer's
-machine as soon as the branch is checked out.
-
-There is no priority field, either, and that one is a choice rather than an
-inheritance. The ordering that matters has one shape, which is that something
-rewriting the tree runs before something validating it, and a number per entry
-invites everybody to claim ten. Entries run sorted and stop at the first
-failure, and where the alphabet gives the wrong answer the fix is to rename one.
-
-## Extras
-
-### Status
-
-In use and small. The manifest format is the surface most likely to grow, since
-an event that wants more than an argument list is the obvious next request, and
-anything added there will keep reading the manifests that exist now.
-
-### On disk
-
-```
-.git/shook/
-  hooks/           core.hooksPath points here, one dispatcher per event
-  entries/
-    pre-commit/
-      ante         one argument per line, the first being the working directory
-      mockspace
-  kept/            whatever hook was at the event before, still running
-  declined/        a copy of each hook left in place because a manifest registers what it does
-  from/            where each kept or declined hook was taken from
-  oldpath          the `core.hooksPath` that was set before the install, given back by uninstall
-  manifests/       declarations only this clone has, read by install; never removed
-```
-
-All of it inside the git directory, so none of it is committed and nobody has to
-ignore it. What a clone arrives with is the manifests, and what it runs is
-generated from them by `git shook install`, beside the `core.hooksPath` line the
-same command writes into `.git/config`. Which hooks somebody keeps beyond the
-ones the repository declares is their own business and stays in their own clone.
-
-A hook already at the event is kept and runs first, with one exception: where it
-does nothing but run what a manifest declares at that same event, it is the
-entrypoint a tool wrote for itself before it moved onto a manifest, and keeping
-it would run that tool twice per event. So it is registered once from the
-manifest and left where it is. A copy goes to `declined/`, so a tool that chains to the
-repository's own hook afterwards can tell that file has already run. The hook in git's own hooks directory is
-looked at for this whatever `core.hooksPath` was before the install, since that
-directory is the one such a chain reaches. When no manifest registers what it runs any more, the next full install keeps it as `00-existing` again. Anything doing more than that is somebody's own
-and is kept.
-
-### Limitations
-
-An argument containing a newline cannot be represented, an entry file being one
-argument per line. For hook arguments that means a path with a newline in it,
-which git permits and nothing here handles.
-
-Hooks are per repository and never per directory, which is git's arrangement
-rather than one made here, so several manifests in one tree all fire on every
-commit and a manifest caring only about its own subtree filters the staged paths
-in whatever it runs.
-
-The dispatcher shells out to `git rev-parse` once per invocation to find the
-repository root rather than trusting `$0`, because a relative `core.hooksPath`
-resolves against the directory hooks are run from, and that has cost enough
-people enough time to be worth a subprocess. It asks for the common git
-directory rather than the current one, so a linked worktree runs the same
-entries as the clone it hangs off.
-
-An entry that reads git's stdin gets all of it, since `pre-push` and
-`pre-receive` hand over refs that way and only the first child would otherwise
-see them. The dispatcher captures the stream once and replays it to each, which
-means an entry may read stdin to the end without starving the one after it.
-
-## Support
-
-Feel free to contribute! If unsure about wasting work, the best practice is to throw in an issue describing what you'd do, and only then commit to writing a big PR, because chances are, it might not be something that belongs here. However, forks are always a valid choice and we'd encourage everyone to experiment and have their own takes on this. When doing this, do mind the license(s) though!
-
-The suite is `./tests/git-shook_test.sh` and needs [nutshell](https://github.com/orgrinrt/nutshell) on the path. It builds its own repositories in temporary directories, so it touches no clone on the machine.
-
-Whether you use this project, have learned something from it, or just like it, please consider supporting it by buying me a coffee, so I can dedicate more time on open-source projects like this :)
-
-<a href="https://buymeacoffee.com/orgrinrt" target="_blank"><img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" alt="Buy Me A Coffee" style="height: auto !important;width: auto !important;" ></a>
+Issues and pull requests are welcome, and it is cheaper to open an issue first if the change is a big one. The suite is `./tests/git-shook_test.sh`, needs [nutshell](https://github.com/orgrinrt/nutshell) on the path, and builds its repositories in temporary directories.
 
 ## License
 
