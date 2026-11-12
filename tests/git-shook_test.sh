@@ -198,20 +198,192 @@ a_failing_entry_stops_the_ones_after_it() {
 }
 
 #[test]
-every_entry_sees_the_stdin_git_gave() {
+every_pre_push_entry_sees_every_line_git_gave() {
     # `pre-push` hands refs over on stdin, so with one shared pipe only the
     # first entry would see them. The dispatcher replays a copy to each.
     local w; w="$(a_repo)"
-    mkdir -p "$w/one" "$w/two"
-    printf 'name = "aaa"\n\n[hooks.pre-commit]\nrun = ["sh", "-c", "echo ONE-SAW-$(cat)"]\n' > "$w/one/shook.toml"
-    printf 'name = "zzz"\n\n[hooks.pre-commit]\nrun = ["sh", "-c", "echo TWO-SAW-$(cat)"]\n' > "$w/two/shook.toml"
-    commit_all "$w" init >/dev/null
+    a_local_manifest "$w" aaa pre-push sh -c 'echo ONE-SAW-$(paste -sd, -),'
+    a_local_manifest "$w" zzz pre-push sh -c 'echo TWO-SAW-$(paste -sd, -),'
     ( cd "$w" && "$SHOOK" install --yes >/dev/null )
 
-    local out; out="$(cd "$w" && printf 'REFS\n' | ./.git/shook/hooks/pre-commit 2>&1 || true)"
+    local out
+    out="$(cd "$w" && printf 'r1 a\nr2 b\nr3 c\n' | timeout 10 ./.git/shook/hooks/pre-push origin url 2>&1 || true)"
 
-    assert_contains "$out" ONE-SAW-REFS
-    assert_contains "$out" TWO-SAW-REFS
+    assert_contains "$out" 'ONE-SAW-r1 a,r2 b,r3 c,'
+    assert_contains "$out" 'TWO-SAW-r1 a,r2 b,r3 c,'
+    rm -rf "$w"
+}
+
+#[test]
+every_reference_transaction_entry_sees_every_line_git_gave() {
+    # Driven by git itself: one `update-ref --stdin` transaction over three
+    # refs hands the hook three lines per state.
+    local w; w="$(a_repo)"
+    "${GIT_SCRUB[@]}" git -C "$w" commit -q --allow-empty -m init
+    local log="$w/.git/seen"
+    a_local_manifest "$w" aaa reference-transaction sh -c 'echo one $1 $(wc -l) >>"$0"' "$log"
+    a_local_manifest "$w" zzz reference-transaction sh -c 'echo two $1 $(wc -l) >>"$0"' "$log"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    local h; h="$(git -C "$w" rev-parse HEAD)"
+    printf 'create refs/t/a %s\ncreate refs/t/b %s\ncreate refs/t/c %s\n' "$h" "$h" "$h" |
+        timeout 10 git -C "$w" update-ref --stdin
+
+    assert_contains "$(cat "$log")" 'one committed 3'
+    assert_contains "$(cat "$log")" 'two committed 3'
+    rm -rf "$w"
+}
+
+#[test]
+an_event_git_feeds_nothing_leaves_the_callers_stdin_alone() {
+    # `pre-commit` takes nothing on stdin, so an entry there reads nothing and
+    # the dispatcher reads nothing either: what is on the caller's stdin is
+    # still there afterwards.
+    local w; w="$(a_repo)"
+    a_local_manifest "$w" aaa pre-commit sh -c 'echo SAW-$(cat)-'
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    local out
+    out="$(cd "$w" && printf 'L1\nL2\n' | { timeout 10 ./.git/shook/hooks/pre-commit; cat; } 2>&1)"
+
+    assert_contains "$out" 'SAW--'
+    assert_contains "$out" L1
+    assert_contains "$out" L2
+    rm -rf "$w"
+}
+
+# A repository whose `core.fsmonitor` is the dispatcher, five tracked files.
+an_fsmonitor_repo() {
+    local w; w="$(a_repo)"
+    local i; for i in 1 2 3 4 5; do printf '%s\n' "$i" > "$w/f$i"; done
+    commit_all "$w" init >/dev/null
+    printf '%s' "$w"
+}
+
+fsmonitor_on() { # <repo>
+    ( cd "$1" && "$SHOOK" install --yes >/dev/null )
+    git -C "$1" config core.fsmonitor "$1/.git/shook/hooks/fsmonitor-watchman"
+}
+
+#[test]
+a_git_command_with_an_open_stdin_does_not_hang_behind_fsmonitor() {
+    # Probe 012_probes/f1: git runs `core.fsmonitor` with its own stdin, so a
+    # dispatcher that waits for end of input waits on a pipe nobody closes.
+    local w; w="$(an_fsmonitor_repo)"
+    a_local_manifest "$w" side fsmonitor-watchman true
+    fsmonitor_on "$w"
+    local fifo; fifo="$(mktemp -d)/in"
+    mkfifo "$fifo"
+    exec 7<>"$fifo"
+
+    printf 'x\n' >> "$w/f1"
+    local st=0 out
+    out="$(timeout 10 git -C "$w" status --short <"$fifo" 2>&1)" || st=$?
+
+    exec 7>&-
+    assert_eq "$st" 0
+    assert_contains "$out" 'M f1'
+    rm -rf "$w" "$(dirname "$fifo")"
+}
+
+#[test]
+a_read_loop_calling_git_status_behind_fsmonitor_visits_every_line() {
+    # Probe 014_probes/g1b: the hook used to swallow the loop's own input, and
+    # the loop visited one file of six.
+    local w; w="$(an_fsmonitor_repo)"
+    a_local_manifest "$w" side fsmonitor-watchman true
+    fsmonitor_on "$w"
+
+    local n
+    n="$(cd "$w" && git ls-files | timeout 20 sh -c 'while read -r f; do git status --short -- "$f" >/dev/null; echo "$f"; done' | wc -l)"
+
+    assert_eq "$n" "$(git -C "$w" ls-files | wc -l)"
+    rm -rf "$w"
+}
+
+#[test]
+fsmonitor_with_no_answering_entry_answers_the_floor() {
+    # A side-effect entry's stdout never reaches git; with nothing declared to
+    # answer, the dispatcher says everything may have changed.
+    local w; w="$(an_fsmonitor_repo)"
+    a_local_manifest "$w" side fsmonitor-watchman sh -c 'echo NOISE'
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    local out
+    out="$(cd "$w" && timeout 10 ./.git/shook/hooks/fsmonitor-watchman 2 TOKEN </dev/null | tr '\0' '|')"
+
+    assert_eq "$out" 'TOKEN|/|'
+    rm -rf "$w"
+}
+
+#[test]
+fsmonitor_answers_with_the_entry_that_declares_it() {
+    local w; w="$(an_fsmonitor_repo)"
+    a_local_manifest "$w" side fsmonitor-watchman sh -c 'echo NOISE'
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "watch"\n\n[hooks.fsmonitor-watchman]\nanswers = true\nrun = ["sh", "-c", "printf \\"T2\\\\0f3\\\\0\\""]\n' \
+        > "$w/.git/shook/manifests/watch.toml"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    local out
+    out="$(cd "$w" && timeout 10 ./.git/shook/hooks/fsmonitor-watchman 2 TOKEN </dev/null | tr '\0' '|')"
+
+    assert_eq "$out" 'T2|f3|'
+    rm -rf "$w"
+}
+
+#[test]
+two_entries_answering_fsmonitor_are_refused() {
+    local w; w="$(a_repo)"
+    mkdir -p "$w/.git/shook/manifests"
+    local n; for n in one two; do
+        printf 'name = "%s"\n\n[hooks.fsmonitor-watchman]\nanswers = true\nrun = ["true"]\n' "$n" \
+            > "$w/.git/shook/manifests/$n.toml"
+    done
+
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)" && fail "two answering entries were installed"
+    assert_contains "$out" 'already answers fsmonitor-watchman'
+    rm -rf "$w"
+}
+
+#[test]
+answers_is_refused_at_an_event_with_no_protocol_to_answer() {
+    local w; w="$(a_repo)"
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "one"\n\n[hooks.pre-commit]\nanswers = true\nrun = ["true"]\n' \
+        > "$w/.git/shook/manifests/one.toml"
+
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)" && fail "answers at pre-commit was installed"
+    assert_contains "$out" 'answers is for fsmonitor-watchman only'
+    rm -rf "$w"
+}
+
+#[test]
+a_persons_own_fsmonitor_hook_kept_by_install_is_the_answer() {
+    local w; w="$(an_fsmonitor_repo)"
+    printf '#!/bin/sh\nprintf "MINE\\0f2\\0"\n' > "$w/.git/hooks/fsmonitor-watchman"
+    chmod +x "$w/.git/hooks/fsmonitor-watchman"
+    a_local_manifest "$w" side fsmonitor-watchman sh -c 'echo NOISE'
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    local out
+    out="$(cd "$w" && timeout 10 ./.git/shook/hooks/fsmonitor-watchman 2 TOKEN </dev/null | tr '\0' '|')"
+
+    assert_eq "$out" 'MINE|f2|'
+    rm -rf "$w"
+}
+
+#[test]
+a_manifest_answering_beside_a_persons_own_fsmonitor_hook_is_refused() {
+    local w; w="$(an_fsmonitor_repo)"
+    printf '#!/bin/sh\nprintf "MINE\\0f2\\0"\n' > "$w/.git/hooks/fsmonitor-watchman"
+    chmod +x "$w/.git/hooks/fsmonitor-watchman"
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "watch"\n\n[hooks.fsmonitor-watchman]\nanswers = true\nrun = ["true"]\n' \
+        > "$w/.git/shook/manifests/watch.toml"
+
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)" && fail "a second answer was installed"
+    assert_contains "$out" 'already answers fsmonitor-watchman'
     rm -rf "$w"
 }
 
