@@ -422,7 +422,8 @@ every_other_event_leaves_the_callers_stdin_alone() {
         a_local_manifest "$w" "m-$ev" "$ev" sh -c 'echo SAW-$(cat)-'
         n=$((n + 1))
     done
-    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    [ "$n" -gt 20 ] || fail "only $n events read from KNOWN_EVENTS"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null ) || fail "install refused"
 
     local out seen=0
     for ev in $(known_events); do

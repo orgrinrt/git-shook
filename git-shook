@@ -1164,8 +1164,11 @@ cmd_uninstall() {
 	fm=$(git -C "$root" config core.fsmonitor 2>/dev/null) || fm=""
 	case $fm in
 	"$sd/hooks/"* | .git/shook/hooks/*)
-		git -C "$root" config --unset core.fsmonitor
-		printf 'unset core.fsmonitor, which named the dispatcher\n'
+		if git -C "$root" config --local --unset core.fsmonitor 2>/dev/null; then
+			printf 'unset core.fsmonitor, which named the dispatcher\n'
+		else
+			printf 'core.fsmonitor names the dispatcher outside this repository'"'"'s config; unset it there\n'
+		fi
 		;;
 	esac
 	# The manifests a clone keeps in `manifests/` are declarations and not
