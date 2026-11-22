@@ -49,6 +49,16 @@ Entries run in sorted order and stop at the first failure. There is no priority 
 
 Taking over `core.hooksPath` makes git stop reading the old hooks directory, so a hook that was already at an event is kept and runs first, and `uninstall` puts it back where it came from. Everything git-shook writes lives under `.git/shook/`, so none of it is committed. Hooks belong to a repository and never to a directory, so several manifests in one tree all fire on every commit, and one that only cares about its own subtree filters the staged paths itself. An argument containing a newline cannot be represented, since an entry file holds one argument per line.
 
+Stdin is read only at the events git feeds it to, `pre-push`, `pre-receive`, `post-receive`, `post-rewrite` and `reference-transaction`, and there every entry gets its own copy. At every other event the entries get nothing on stdin and the caller's input stays where it was, so a `while read` loop that runs git keeps its lines. `proc-receive` talks a protocol both ways and gets the stream as it is.
+
+At `fsmonitor-watchman` the stdout is the reply to git, so one entry answers and the rest run for their side effects with their output thrown away. An entry says it is the one with `answers = true` in its section, and `install` refuses a second. Without one, a hook that was already at the event answers, and without that the dispatcher tells git that everything may have changed. To use it, set `core.fsmonitor` to the dispatcher's absolute path, `"$(git rev-parse --path-format=absolute --git-common-dir)/shook/hooks/fsmonitor-watchman"`, which holds in a linked worktree too. `uninstall` unsets it again when it names the dispatcher, and `doctor` reports one that names a dispatcher no longer there.
+
+```toml
+[hooks.fsmonitor-watchman]
+answers = true
+run = ["sh", "scripts/watchman-query.sh"]
+```
+
 ## Contributing
 
 Issues and pull requests are welcome, and it is cheaper to open an issue first if the change is a big one. The suite is `./tests/git-shook_test.sh`, needs [nutshell](https://github.com/orgrinrt/nutshell) on the path, and builds its repositories in temporary directories.

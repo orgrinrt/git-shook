@@ -18,15 +18,15 @@
 set -u
 
 VERSION=0.1.0
-DISPATCH_VERSION=1
+DISPATCH_VERSION=2
 
 # ---------------------------------------------------------------------------
 # the dispatcher
 #
 # This is what goes at the hook event. It reads the entries for its own event,
-# runs each with the arguments git gave, and replays git's stdin to every one of
-# them, since `pre-push` and `pre-receive` hand over refs that way and only the
-# first child would otherwise see them.
+# runs each with the arguments git gave, and at the events git feeds on stdin
+# replays it to every one of them, since `pre-push` and `pre-receive` hand over
+# refs that way and only the first child would otherwise see them.
 #
 # An entry is data rather than a script: the first line is the directory to run
 # in, relative to the repository root, and every line after it is one argument.
@@ -84,9 +84,33 @@ fi
 tmp=\$(mktemp -d 2>/dev/null || mktemp -d -t git-shook) || exit 1
 trap 'rm -rf "\$tmp"' EXIT
 
-: >"\$tmp/stdin"
-[ -t 0 ] || cat >"\$tmp/stdin"
+# Only the events git feeds on stdin have it read and replayed to every entry.
+# Every other event reads nothing: git does not close stdin for all of them
+# (\`core.fsmonitor\` inherits the caller's), so waiting for its end can wait
+# forever, and reading it takes input that belongs to whoever ran git, such as
+# the rest of a \`while read\` loop. Those entries get /dev/null, as git gives a
+# hook it feeds nothing. \`proc-receive\` speaks a protocol both ways and is
+# passed the stream itself; \`push-to-checkout\` takes its commit as an argument.
+in=/dev/null
+case \$ev in
+pre-push | pre-receive | post-receive | post-rewrite | reference-transaction)
+	in="\$tmp/stdin"
+	cat >"\$in"
+	;;
+proc-receive) in=- ;;
+esac
 for a in "\$@"; do printf '%s\\n' "\$a"; done >"\$tmp/argv"
+fm_ver=\${1:-} fm_tok=\${2:-}
+
+# At \`fsmonitor-watchman\` stdout is the protocol, so one entry answers it and
+# every other one runs for its side effects with stdout thrown away. The answer
+# is the entry named in \`answers/<event>\`, and with none there the floor, which
+# tells git everything may have changed.
+ans=""
+if [ "\$ev" = fsmonitor-watchman ]; then
+	[ -f "\$g/shook/answers/\$ev" ] && ans=\$(head -n 1 "\$g/shook/answers/\$ev")
+	[ -n "\$ans" ] && [ -f "\$d/\$ans" ] || ans=""
+fi
 
 st=0
 for e in "\$d"/*; do
@@ -97,8 +121,19 @@ for e in "\$d"/*; do
 	while IFS= read -r a; do set -- "\$@" "\$a"; done <"\$tmp/entry"
 	while IFS= read -r a; do set -- "\$@" "\$a"; done <"\$tmp/argv"
 	[ \$# -gt 0 ] || continue
-	( cd "\$root/\$wd" 2>/dev/null || exit 127; exec "\$@" ) <"\$tmp/stdin" || { st=\$?; break; }
+	if [ "\$ev" = fsmonitor-watchman ] && [ "\${e##*/}" != "\$ans" ]; then
+		( cd "\$root/\$wd" 2>/dev/null || exit 127; exec "\$@" ) <"\$in" >/dev/null || { st=\$?; break; }
+	elif [ "\$in" = - ]; then
+		( cd "\$root/\$wd" 2>/dev/null || exit 127; exec "\$@" ) || { st=\$?; break; }
+	else
+		( cd "\$root/\$wd" 2>/dev/null || exit 127; exec "\$@" ) <"\$in" || { st=\$?; break; }
+	fi
 done
+if [ \$st -eq 0 ] && [ "\$ev" = fsmonitor-watchman ] && [ -z "\$ans" ]; then
+	# Version 2 hands over the last token and wants a token first; version 1
+	# wants the paths alone. A path of \`/\` is every path.
+	if [ "\$fm_ver" = 1 ]; then printf '/\\0'; else printf '%s\\0/\\0' "\${fm_tok:-git-shook}"; fi
+fi
 exit \$st
 DISPATCH
 }
@@ -179,6 +214,18 @@ line ~ /^name[ \t]*=/ {
 		gsub(/^"|"$/, "", v)
 		print v
 	}
+	next
+}
+
+# Whether this entry answers a hook whose stdout is a protocol. Only
+# `fsmonitor-watchman` has one that several entries could talk over, so the key
+# is refused anywhere else rather than accepted and meaning nothing.
+line ~ /^answers[ \t]*=/ {
+	if (ev == "") fail("answers outside a [hooks.<event>] section")
+	v = line; sub(/^answers[ \t]*=[ \t]*/, "", v)
+	if (v != "true" && v != "false") fail("answers takes true or false, found " v)
+	if (ev != "fsmonitor-watchman") fail("answers is for fsmonitor-watchman only, found it under " ev)
+	if (mode == "answers" && v == "true") print ev
 	next
 }
 
@@ -334,6 +381,80 @@ seen_name() { # <event> <name> <manifest>
 # able to say the same thing there without the two registering twice. The local
 # manifests are read first, so by the time a tracked one is asked about this,
 # `LOCALS` holds them.
+PLANNED=""
+ANSWERED=""
+
+# One entry answers `fsmonitor-watchman` and no more, since two writing the
+# protocol to one stdout is a reply git cannot read. Refused while planning,
+# before anything is written.
+answer_claim() { # <manifest> <event> <name>
+	for _a in $ANSWERED; do
+		case $_a in "$2="*) die "$1: ${_a#*=} already answers $2, and only one entry may" ;; esac
+	done
+	ANSWERED="$ANSWERED $2=$3"
+}
+
+answerer() { # <event>
+	for _a in $ANSWERED; do
+		case $_a in "$1="*) printf '%s' "${_a#*=}"; return 0 ;; esac
+	done
+}
+
+# Which entry answers each protocol event, written to `answers/<event>` where
+# the dispatcher reads it. A manifest that declares `answers` is the one; with
+# none, the hook that was already here, since that was answering before this
+# tool took the event over. Called once the entries are written.
+record_answers() { # <shook dir> <events>
+	for _e in $2; do
+		[ "$_e" = fsmonitor-watchman ] || continue
+		_w=$(answerer "$_e")
+		if [ -z "$_w" ]; then
+			_o=$(head -n 1 "$1/answers/$_e" 2>/dev/null)
+			# under `--only` an answer from a manifest not looked at stands
+			if [ -n "$only" ] && [ -n "$_o" ] && [ "$_o" != 00-existing ] &&
+				[ -f "$1/entries/$_e/$_o" ] && ! case " $PLANNED " in *" $_o "*) true ;; *) false ;; esac; then
+				_w=$_o
+			elif [ -f "$1/entries/$_e/00-existing" ]; then
+				_w=00-existing
+			fi
+		fi
+		mkdir -p "$1/answers"
+		if [ -n "$_w" ]; then
+			printf '%s\n' "$_w" >"$1/answers/$_e"
+		else
+			rm -f "$1/answers/$_e"
+		fi
+	done
+}
+
+# A manifest answering where something registered already does: the hook that
+# was here, or under `--only` the entry of a manifest this install leaves alone.
+# Asked before anything moves, so a refusal leaves the old hook where git still
+# runs it: one already kept, or one in the old directory that install would keep.
+answers_free() { # <shook dir> <old hooks dir> <root> <manifests>
+	for _a in $ANSWERED; do
+		_e=${_a%%=*}
+		_h=""
+		# A kept hook that runs what a manifest registers now is dropped by this
+		# install (the loop after the entries are written), so it answers nothing.
+		if [ -f "$1/entries/$_e/00-existing" ]; then
+			if ! [ -f "$1/kept/$_e" ] || ! declares_this_hook "$3" "$4" "$_e" "$1/kept/$_e"; then
+				_h=1
+			fi
+		elif [ -n "$2" ] && [ -f "$2/$_e" ] && ! grep -q 'git-shook dispatcher' "$2/$_e" &&
+			! declares_this_hook "$3" "$4" "$_e" "$2/$_e"; then
+			_h=1
+		fi
+		[ -z "$_h" ] ||
+			die "${_a#*=}: the hook that was here already answers $_e, and only one entry may; take it out, or drop answers"
+		[ -n "$only" ] || continue
+		_o=$(head -n 1 "$1/answers/$_e" 2>/dev/null)
+		[ -n "$_o" ] && [ "$_o" != "${_a#*=}" ] && [ -f "$1/entries/$_e/$_o" ] || continue
+		case " $PLANNED " in *" $_o "*) continue ;; esac
+		die "${_a#*=}: $_o already answers $_e, and only one entry may"
+	done
+}
+
 shadowed() { # <event> <name> <manifest>
 	case $3 in /*) return 1 ;; esac
 	# By name, not by event: the local manifest replaces the tracked one whole,
@@ -479,6 +600,9 @@ EOF
 		name=$(manifest_name "$root" "$m")
 		check_name "$m" "$name"
 		wd=$(manifest_dir "$m")
+		# Read whole and on its own, since awk refusing a key after the `run`
+		# it already printed would otherwise leave the argument list standing.
+		answers=$(manifest_read answers "$(mf "$root" "$m")") || die "$m: refused, nothing installed"
 		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
 			check_event "$m" "$ev"
 			argv=$(manifest_read argv "$(mf "$root" "$m")" "$ev")
@@ -488,8 +612,11 @@ EOF
 				continue
 			fi
 			seen_name "$ev" "$name" "$m"
+			PLANNED="$PLANNED $name"
+			case " $answers " in *" $ev "*) answer_claim "$m" "$ev" "$name" ;; esac
 			printf '  %-14s %-16s %s' "$ev" "$name" "$(show_argv "$argv")"
 			[ -n "$wd" ] && printf ' (in %s)' "$wd"
+			case " $answers " in *" $ev "*) printf ' (answers)' ;; esac
 			printf '\n'
 		done
 	done <<EOF
@@ -498,6 +625,7 @@ EOF
 	printf '\n'
 
 	sd=$(shook_dir "$root")
+	answers_free "$sd" "$_od" "$root" "$manifests"
 
 	if [ "$yes" -eq 0 ]; then
 		[ -t 0 ] || die "not a terminal, so pass --yes to install without confirming"
@@ -645,6 +773,7 @@ EOF
 	done <<EOF
 $manifests
 EOF
+	record_answers "$sd" "$all_events"
 
 	# Absolute, because the git directory is not always under the working tree:
 	# a linked worktree's `.git` is a file, a submodule's is elsewhere entirely,
@@ -974,6 +1103,19 @@ EOF
 		done
 	fi
 
+	# git runs `core.fsmonitor` on every command that reads the index, so one
+	# naming a dispatcher that is gone fails them all.
+	fm=$(git -C "$root" config core.fsmonitor 2>/dev/null) || fm=""
+	case $fm in
+	"$sd/hooks/"* | .git/shook/hooks/*)
+		case $fm in /*) ;; *) fm="$root/$fm" ;; esac
+		if [ ! -x "$fm" ]; then
+			printf 'core.fsmonitor names %s, which is not there. Run `git shook install`, or unset it.\n' "$fm"
+			bad=1
+		fi
+		;;
+	esac
+
 	# An older git-shook generated at the repository root, where it showed up in
 	# everybody's `git status` and had to be ignored by hand. Install clears it,
 	# unless somebody committed it, in which case only they can.
@@ -1017,10 +1159,22 @@ cmd_uninstall() {
 	else
 		git -C "$root" config --unset core.hooksPath 2>/dev/null || true
 	fi
+	# A `core.fsmonitor` pointing at the dispatcher would name a file removed
+	# below, and git would fail every command that reads the index.
+	fm=$(git -C "$root" config core.fsmonitor 2>/dev/null) || fm=""
+	case $fm in
+	"$sd/hooks/"* | .git/shook/hooks/*)
+		if git -C "$root" config --local --unset core.fsmonitor 2>/dev/null; then
+			printf 'unset core.fsmonitor, which named the dispatcher\n'
+		else
+			printf 'core.fsmonitor names the dispatcher outside this repository'"'"'s config; unset it there\n'
+		fi
+		;;
+	esac
 	# The manifests a clone keeps in `manifests/` are declarations and not
 	# registry, and are whatever the operator or a tool put there, so they stay
 	# and the next `install` picks them up again.
-	rm -rf "$sd/hooks" "$sd/entries" "$sd/kept" "$sd/declined" "$sd/from" "$sd/oldpath" "$sd/names"
+	rm -rf "$sd/hooks" "$sd/entries" "$sd/kept" "$sd/declined" "$sd/from" "$sd/oldpath" "$sd/names" "$sd/answers"
 	rmdir "$sd" 2>/dev/null || true
 	# And whatever an older git-shook left at the repository root, on the same
 	# terms `install` uses: a tracked one is somebody's committed file and not
@@ -1066,6 +1220,11 @@ A shook.toml declares what its own project wants run:
 shell and there is no quoting to get wrong. It runs with the manifest's own
 directory as its working directory. A hook that needs a pipe or a redirect ships
 a script and names it, which puts it in a diff where somebody can object to it.
+
+At fsmonitor-watchman stdout is the reply to git, so one entry says
+`answers = true` in its section and the others run with their output discarded.
+With none, a hook that was already there answers, else every path is reported
+changed. Stdin reaches entries only at the events git feeds it to.
 
 Discovery happens when you run `install`, never when a hook fires, so a manifest
 arriving through a merge does nothing until you look at it and say yes.
