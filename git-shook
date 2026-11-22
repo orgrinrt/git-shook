@@ -435,8 +435,12 @@ answers_free() { # <shook dir> <old hooks dir> <root> <manifests>
 	for _a in $ANSWERED; do
 		_e=${_a%%=*}
 		_h=""
+		# A kept hook that runs what a manifest registers now is dropped by this
+		# install (the loop after the entries are written), so it answers nothing.
 		if [ -f "$1/entries/$_e/00-existing" ]; then
-			_h=1
+			if ! [ -f "$1/kept/$_e" ] || ! declares_this_hook "$3" "$4" "$_e" "$1/kept/$_e"; then
+				_h=1
+			fi
 		elif [ -n "$2" ] && [ -f "$2/$_e" ] && ! grep -q 'git-shook dispatcher' "$2/$_e" &&
 			! declares_this_hook "$3" "$4" "$_e" "$2/$_e"; then
 			_h=1
@@ -1099,6 +1103,19 @@ EOF
 		done
 	fi
 
+	# git runs `core.fsmonitor` on every command that reads the index, so one
+	# naming a dispatcher that is gone fails them all.
+	fm=$(git -C "$root" config core.fsmonitor 2>/dev/null) || fm=""
+	case $fm in
+	"$sd/hooks/"* | .git/shook/hooks/*)
+		case $fm in /*) ;; *) fm="$root/$fm" ;; esac
+		if [ ! -x "$fm" ]; then
+			printf 'core.fsmonitor names %s, which is not there. Run `git shook install`, or unset it.\n' "$fm"
+			bad=1
+		fi
+		;;
+	esac
+
 	# An older git-shook generated at the repository root, where it showed up in
 	# everybody's `git status` and had to be ignored by hand. Install clears it,
 	# unless somebody committed it, in which case only they can.
@@ -1142,6 +1159,15 @@ cmd_uninstall() {
 	else
 		git -C "$root" config --unset core.hooksPath 2>/dev/null || true
 	fi
+	# A `core.fsmonitor` pointing at the dispatcher would name a file removed
+	# below, and git would fail every command that reads the index.
+	fm=$(git -C "$root" config core.fsmonitor 2>/dev/null) || fm=""
+	case $fm in
+	"$sd/hooks/"* | .git/shook/hooks/*)
+		git -C "$root" config --unset core.fsmonitor
+		printf 'unset core.fsmonitor, which named the dispatcher\n'
+		;;
+	esac
 	# The manifests a clone keeps in `manifests/` are declarations and not
 	# registry, and are whatever the operator or a tool put there, so they stay
 	# and the next `install` picks them up again.

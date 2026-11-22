@@ -106,7 +106,14 @@ in its section, and a second one is refused. Without one, a hook that was
 already at the event answers, and without that the dispatcher replies that
 every path may have changed.
 .I answers
-anywhere else is refused.
+anywhere else is refused. To use it, set
+.I core.fsmonitor
+to the absolute path of the dispatcher, which in a linked worktree is under the
+common git directory;
+.B uninstall
+unsets it again when it names the dispatcher, and
+.B doctor
+reports one naming a dispatcher that is gone.
 .SH FILES
 .TP
 .I shook.toml

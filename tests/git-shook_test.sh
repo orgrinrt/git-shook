@@ -387,6 +387,197 @@ a_manifest_answering_beside_a_persons_own_fsmonitor_hook_is_refused() {
     rm -rf "$w"
 }
 
+# git-shook's own list, so the tests below cover every event it accepts.
+known_events() {
+    sed -n '/^KNOWN_EVENTS="/,/"$/p' "$SHOOK" | tr -d '"' | sed 's/^KNOWN_EVENTS=//' | tr ' ' '\n' | grep .
+}
+
+STDIN_EVENTS="pre-push pre-receive post-receive post-rewrite reference-transaction"
+
+#[test]
+every_event_git_feeds_on_stdin_replays_it_to_every_entry() {
+    local w ev; w="$(a_repo)"
+    for ev in $STDIN_EVENTS; do
+        a_local_manifest "$w" "a-$ev" "$ev" sh -c 'echo ONE-SAW-$(paste -sd, -),'
+        a_local_manifest "$w" "z-$ev" "$ev" sh -c 'echo TWO-SAW-$(paste -sd, -),'
+    done
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    local out
+    for ev in $STDIN_EVENTS; do
+        out="$(cd "$w" && printf 'l1\nl2\n' | timeout 10 "./.git/shook/hooks/$ev" x y 2>&1 || true)"
+        assert_contains "$out" 'ONE-SAW-l1,l2,'
+        assert_contains "$out" 'TWO-SAW-l1,l2,'
+    done
+    rm -rf "$w"
+}
+
+#[test]
+every_other_event_leaves_the_callers_stdin_alone() {
+    # Each event git-shook accepts that git feeds nothing: the entry reads
+    # nothing and the caller's lines are still there after the dispatcher.
+    local w ev n=0; w="$(a_repo)"
+    for ev in $(known_events); do
+        case " $STDIN_EVENTS proc-receive fsmonitor-watchman " in *" $ev "*) continue ;; esac
+        a_local_manifest "$w" "m-$ev" "$ev" sh -c 'echo SAW-$(cat)-'
+        n=$((n + 1))
+    done
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    local out seen=0
+    for ev in $(known_events); do
+        case " $STDIN_EVENTS proc-receive fsmonitor-watchman " in *" $ev "*) continue ;; esac
+        out="$(cd "$w" && printf 'L1\nL2\n' | { timeout 10 "./.git/shook/hooks/$ev" a b c; cat; } 2>&1)"
+        assert_contains "$out" 'SAW--'
+        assert_contains "$out" L1
+        assert_contains "$out" L2
+        seen=$((seen + 1))
+    done
+    assert_eq "$seen" "$n"
+    rm -rf "$w"
+}
+
+#[test]
+proc_receive_gets_the_stream_itself() {
+    # It speaks a protocol both ways, so the entry reads what is there now and
+    # what is left after it stays with the caller.
+    local w; w="$(a_repo)"
+    a_local_manifest "$w" aaa proc-receive sh -c 'read -r l; echo GOT-$l'
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    local out
+    out="$(cd "$w" && printf 'P1\nP2\n' | { timeout 10 ./.git/shook/hooks/proc-receive; cat; } 2>&1)"
+
+    assert_contains "$out" GOT-P1
+    assert_contains "$out" P2
+    rm -rf "$w"
+}
+
+#[test]
+fsmonitor_version_one_with_no_answering_entry_answers_every_path() {
+    local w; w="$(an_fsmonitor_repo)"
+    a_local_manifest "$w" side fsmonitor-watchman sh -c 'echo NOISE'
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    local out
+    out="$(cd "$w" && timeout 10 ./.git/shook/hooks/fsmonitor-watchman 1 123 </dev/null | tr '\0' '|')"
+
+    assert_eq "$out" '/|'
+    rm -rf "$w"
+}
+
+#[test]
+a_kept_hook_a_manifest_now_declares_does_not_block_that_manifest_answering() {
+    # The kept hook runs what the manifest registers, so install drops it; it
+    # was refused as a second answerer before that, and the advice to drop
+    # `answers` would have lost the reply.
+    local w; w="$(an_fsmonitor_repo)"
+    printf '#!/bin/sh\nexec /bin/echo-watch "$@"\n' > "$w/.git/hooks/fsmonitor-watchman"
+    chmod +x "$w/.git/hooks/fsmonitor-watchman"
+    a_local_manifest "$w" side pre-commit true
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/entries/fsmonitor-watchman/00-existing"
+
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "watch"\n\n[hooks.fsmonitor-watchman]\nanswers = true\nrun = ["/bin/echo-watch"]\n' \
+        > "$w/.git/shook/manifests/watch.toml"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null ) || fail "install refused the declared answerer"
+
+    assert_fails test -f "$w/.git/shook/entries/fsmonitor-watchman/00-existing"
+    assert_eq "$(cat "$w/.git/shook/answers/fsmonitor-watchman")" watch
+    rm -rf "$w"
+}
+
+#[test]
+dropping_answers_and_installing_again_clears_the_record() {
+    local w; w="$(an_fsmonitor_repo)"
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "watch"\n\n[hooks.fsmonitor-watchman]\nanswers = true\nrun = ["true"]\n' \
+        > "$w/.git/shook/manifests/watch.toml"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    assert_ok test -f "$w/.git/shook/answers/fsmonitor-watchman"
+
+    printf 'name = "watch"\n\n[hooks.fsmonitor-watchman]\nrun = ["true"]\n' \
+        > "$w/.git/shook/manifests/watch.toml"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    assert_fails test -f "$w/.git/shook/answers/fsmonitor-watchman"
+    rm -rf "$w"
+}
+
+#[test]
+an_answer_from_a_manifest_an_only_install_leaves_alone_stands() {
+    local w; w="$(an_fsmonitor_repo)"
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "watch"\n\n[hooks.fsmonitor-watchman]\nanswers = true\nrun = ["true"]\n' \
+        > "$w/.git/shook/manifests/watch.toml"
+    a_local_manifest "$w" other pre-commit true
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    ( cd "$w" && "$SHOOK" install --yes --only other >/dev/null ) || fail "the --only install was refused"
+
+    assert_eq "$(cat "$w/.git/shook/answers/fsmonitor-watchman")" watch
+    rm -rf "$w"
+}
+
+#[test]
+a_second_answerer_under_only_is_refused_beside_the_one_left_alone() {
+    local w; w="$(an_fsmonitor_repo)"
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "watch"\n\n[hooks.fsmonitor-watchman]\nanswers = true\nrun = ["true"]\n' \
+        > "$w/.git/shook/manifests/watch.toml"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+    printf 'name = "late"\n\n[hooks.fsmonitor-watchman]\nanswers = true\nrun = ["true"]\n' \
+        > "$w/.git/shook/manifests/late.toml"
+
+    local out; out="$(cd "$w" && "$SHOOK" install --yes --only late 2>&1)" && fail "a second answer was installed"
+    assert_contains "$out" 'watch already answers fsmonitor-watchman'
+    rm -rf "$w"
+}
+
+#[test]
+answers_outside_a_section_or_not_a_boolean_is_refused() {
+    local w; w="$(a_repo)"
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "one"\nanswers = true\n\n[hooks.fsmonitor-watchman]\nrun = ["true"]\n' \
+        > "$w/.git/shook/manifests/one.toml"
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)" && fail "answers outside a section was installed"
+    assert_contains "$out" 'answers outside a [hooks.<event>] section'
+
+    printf 'name = "one"\n\n[hooks.fsmonitor-watchman]\nanswers = yes\nrun = ["true"]\n' \
+        > "$w/.git/shook/manifests/one.toml"
+    out="$(cd "$w" && "$SHOOK" install --yes 2>&1)" && fail "answers = yes was installed"
+    assert_contains "$out" 'answers takes true or false'
+    rm -rf "$w"
+}
+
+#[test]
+uninstall_takes_the_answer_record_and_the_fsmonitor_setting_away() {
+    local w; w="$(an_fsmonitor_repo)"
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "watch"\n\n[hooks.fsmonitor-watchman]\nanswers = true\nrun = ["true"]\n' \
+        > "$w/.git/shook/manifests/watch.toml"
+    fsmonitor_on "$w"
+
+    ( cd "$w" && "$SHOOK" uninstall >/dev/null )
+
+    assert_fails test -d "$w/.git/shook/answers"
+    assert_fails git -C "$w" config core.fsmonitor
+    local st=0; git -C "$w" status --short >/dev/null 2>&1 || st=$?
+    assert_eq "$st" 0
+    rm -rf "$w"
+}
+
+#[test]
+doctor_reports_an_fsmonitor_setting_naming_a_dispatcher_that_is_gone() {
+    local w; w="$(an_fsmonitor_repo)"
+    git -C "$w" config core.fsmonitor "$w/.git/shook/hooks/fsmonitor-watchman"
+
+    local out; out="$(cd "$w" && "$SHOOK" doctor 2>&1)" && fail "doctor called it healthy"
+    assert_contains "$out" 'core.fsmonitor names'
+    rm -rf "$w"
+}
+
 #[test]
 an_argument_containing_a_comma_survives() {
     # The manifest reader walks the run array character by character tracking
