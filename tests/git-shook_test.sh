@@ -691,6 +691,57 @@ a_hook_running_only_what_a_manifest_declares_is_not_kept_as_well() {
 }
 
 #[test]
+a_tracked_hooks_path_whose_files_the_manifest_declares_runs_each_once() {
+    # A repository whose `core.hooksPath` is a tracked directory of whole hook
+    # scripts, moving onto git-shook by declaring each of those files as its
+    # entry. The file the install would keep is the very file the manifest runs,
+    # so keeping it as well runs it twice. Spelled `./hooks/...` in the manifest
+    # so the match is on the real path and not on the spelling.
+    local w; w="$(a_repo)"
+    local tally="$w/tally"
+    mkdir -p "$w/hooks"
+    printf '#!/bin/sh\n# a whole script, not one command\n[ -n "x" ] || exit 1\nprintf "RAN\\n" >> %s\n' "$tally" \
+        > "$w/hooks/pre-commit"
+    chmod +x "$w/hooks/pre-commit"
+    a_manifest_at "$w" "" alpha ./hooks/pre-commit
+    commit_all "$w" init >/dev/null
+    "${GIT_SCRUB[@]}" git -C "$w" config core.hooksPath hooks
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    : > "$tally"
+    printf 'x\n' > "$w/f.txt"
+    commit_all "$w" second >/dev/null
+
+    assert_eq "$(wc -l < "$tally" | tr -d ' ')" 1
+    assert_fails test -f "$w/.git/shook/entries/pre-commit/00-existing"
+    rm -rf "$w"
+}
+
+#[test]
+a_hook_of_the_same_name_somewhere_else_is_still_kept() {
+    # The control: the manifest declares `hooks/pre-commit`, and the hook git
+    # read before is another file of that name in `.git/hooks`. Different
+    # files, so both run.
+    local w; w="$(a_repo)"
+    local tally="$w/tally"
+    mkdir -p "$w/hooks" "$w/.git/hooks"
+    printf '#!/bin/sh\nprintf "TRACKED\\n" >> %s\n' "$tally" > "$w/hooks/pre-commit"
+    printf '#!/bin/sh\nprintf "OWN\\n" >> %s\n' "$tally" > "$w/.git/hooks/pre-commit"
+    chmod +x "$w/hooks/pre-commit" "$w/.git/hooks/pre-commit"
+    a_manifest_at "$w" "" alpha hooks/pre-commit
+    commit_all "$w" init >/dev/null
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null )
+
+    : > "$tally"
+    printf 'x\n' > "$w/f.txt"
+    commit_all "$w" second >/dev/null
+
+    assert_eq "$(sort "$tally" | tr '\n' ' ')" "OWN TRACKED "
+    assert_ok test -f "$w/.git/shook/entries/pre-commit/00-existing"
+    rm -rf "$w"
+}
+
+#[test]
 a_hook_doing_anything_besides_the_declared_command_is_kept() {
     # The boundary. One line of somebody's own beside the exec is enough to
     # make the file theirs, and dropping it would lose work the tool never
