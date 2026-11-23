@@ -678,6 +678,10 @@ EOF
 			ev=${d##*/}
 			declares_this_hook "$root" "$manifests" "$ev" "$sd/declined/$ev" && continue
 			src=$(cat "$sd/from/$ev" 2>/dev/null) || src="$sd/../hooks/$ev"
+			# the copy is never the file a manifest names, so a manifest naming
+			# the original itself is asked about the original
+			cmp -s "$sd/declined/$ev" "$src" &&
+				declares_this_hook "$root" "$manifests" "$ev" "$src" && continue
 			if cmp -s "$sd/declined/$ev" "$src"; then
 				keep_existing "$sd" "$ev" "$sd/declined/$ev"
 				printf 'kept the %s hook again, which no manifest registers now, as 00-existing\n' "$ev"
@@ -839,6 +843,7 @@ declares_this_hook() { # <root> <manifests> <event> <hook file>
 		_argv=$(manifest_read argv "$(mf "$1" "$_m")" "$3")
 		[ -n "$_argv" ] || continue
 		printf '%s\n' "$_argv" | grep -q '[[:space:]]' && continue
+		same_file "$1/$(manifest_dir "$_m")" "$_argv" "$4" && return 0
 		_cmd=$(printf '%s\n' "$_argv" | tr '\n' ' ')
 		_cmd=${_cmd% }
 		awk -v want="$_cmd" '
@@ -859,6 +864,25 @@ declares_this_hook() { # <root> <manifests> <event> <hook file>
 $2
 EOF
 	return 1
+}
+
+# Whether a declared argument list is the hook file itself and nothing else: a
+# repository whose `core.hooksPath` is a tracked directory, which then declares
+# each of those files as its entry, names in the manifest the very file this
+# install would keep. Kept as well, it would run twice, so it counts as declared.
+# The command resolves against the directory the manifest's hooks run in, and
+# both sides are compared as real paths, so a symlink or a `./` is the same file.
+same_file() { # <run dir> <argv, one per line> <hook file>
+	case $2 in *"
+"*) return 1 ;; esac
+	case $2 in
+	/*) _sf=$2 ;;
+	*) _sf=${1%/}/$2 ;;
+	esac
+	[ -f "$_sf" ] && [ -f "$3" ] || return 1
+	_a=$(cd "$(dirname "$_sf")" 2>/dev/null && pwd -P)/$(basename "$_sf") || return 1
+	_b=$(cd "$(dirname "$3")" 2>/dev/null && pwd -P)/$(basename "$3") || return 1
+	[ "$_a" = "$_b" ]
 }
 
 # Where a hook was taken from. It is `core.hooksPath`'s old directory as often
