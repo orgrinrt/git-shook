@@ -1,4 +1,4 @@
-| `git shook doctor` | check that what is declared and what is registered agree, entry by entry, `--only <name>` to check just that manifest |# `git-shook`
+# `git-shook`
 
 > A hook dispatcher for git, one per event with a registry beside it, so several tools can share a hook instead of replacing each other. A single POSIX shell script.
 
@@ -38,7 +38,7 @@ Then once per clone, `git shook install`, which reads every tracked `shook.toml`
 |---|---|
 | `git shook install` | register what the manifests declare, `--yes` to skip the confirmation, `--only <name>` to take just that manifest |
 | `git shook list` | print what is registered per event, in running order |
-| `git shook doctor` | check that what is declared and what is registered agree |
+| `git shook doctor` | check that what is declared and what is registered agree, entry by entry, `--only <name>` to check just that manifest |
 | `git shook uninstall` | remove the registry and put back the hook that was there before |
 
 ## Manifests
