@@ -32,6 +32,10 @@ _git-shook() {
 				'(-y --yes)'{-y,--yes}'[do not ask before registering]' \
 				'*--only[register only the manifest of this name]:manifest name:'
 			;;
+		doctor)
+			_arguments \
+				'*--only[check only the manifest of this name]:manifest name:'
+			;;
 		esac
 		;;
 	esac
