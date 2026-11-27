@@ -1175,6 +1175,22 @@ cmd_list() {
 # ---------------------------------------------------------------------------
 
 cmd_doctor() {
+	# `--only` checks the named manifests and leaves every other one alone, as
+	# `install --only` registers them: a tool checks its own registration this
+	# way without failing on a manifest it has nothing to do with.
+	only=""
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--only)
+			[ $# -ge 2 ] || die "--only takes a manifest name"
+			check_name "--only" "$2"
+			only="$only $2"
+			shift
+			;;
+		*) die "unknown flag: $1" ;;
+		esac
+		shift
+	done
 	root=$(repo_root)
 	sd=$(shook_dir "$root")
 	bad=0
@@ -1204,24 +1220,53 @@ cmd_doctor() {
 	done <<EOF
 $manifests
 EOF
+	found=""
 	while IFS= read -r m; do
 		[ -n "$m" ] || continue
+		name=$(manifest_name "$root" "$m")
+		if [ -n "$only" ]; then
+			case " $only " in *" $name "*) found="$found $name" ;; *) continue ;; esac
+		fi
 		for ev in $(manifest_read events "$(mf "$root" "$m")"); do
-			name=$(manifest_name "$root" "$m")
 			shadowed "$ev" "$name" "$m" && continue
 			declared="$declared $ev/$name "
 			if [ ! -f "$sd/entries/$ev/$name" ]; then
 				printf '%s declares [hooks.%s] and is not registered. Run `git shook install`.\n' "$m" "$ev"
+				bad=1
+				continue
+			fi
+			# What is registered is what the manifest declares now, so an entry
+			# edited by hand, or left from before the manifest changed, is named.
+			want=$({
+				manifest_dir "$m"
+				printf '\n'
+				manifest_read argv "$(mf "$root" "$m")" "$ev"
+			})
+			globs=$(manifest_read paths "$(mf "$root" "$m")" "$ev")
+			have_globs=$(cat "$sd/conditions/$ev/$name" 2>/dev/null)
+			if [ "$want" != "$(cat "$sd/entries/$ev/$name")" ] || [ "$globs" != "$have_globs" ]; then
+				printf 'the %s entry of %s differs from what %s declares. Run `git shook install`.\n' "$ev" "$name" "$m"
 				bad=1
 			fi
 		done
 	done <<EOF
 $manifests
 EOF
+	for n in $only; do
+		case " $found " in *" $n "*) ;; *)
+			printf 'no manifest answers to %s, so nothing of it is registered.\n' "$n"
+			bad=1
+			;;
+		esac
+	done
 
 	if [ -d "$sd/entries" ]; then
 		for ev in "$sd"/entries/*; do
 			[ -d "$ev" ] || continue
+			# under `--only`, the events the named manifests declare and no other
+			if [ -n "$only" ]; then
+				case "$declared" in *" ${ev##*/}/"*) ;; *) continue ;; esac
+			fi
 			# An entry nothing declares runs on every commit and was left by a
 			# manifest that has gone: `--only` installs never prune, so this is
 			# the only place it shows.
@@ -1229,6 +1274,9 @@ EOF
 				[ -f "$f" ] || continue
 				n=${f##*/}
 				[ "$n" = 00-existing ] && continue
+				if [ -n "$only" ]; then
+					case " $only " in *" $n "*) ;; *) continue ;; esac
+				fi
 				# only what the last install recorded: an entry placed by hand is the
 				# operator's and a full install leaves it alone
 				grep -qx -- "$n" "$sd/names" 2>/dev/null || continue
@@ -1361,7 +1409,10 @@ COMMANDS
                       manifests of that name and leaves the others as they
                       were, which is what a tool registering its own wants.
     list              What is registered, per event, in the order it runs.
-    doctor            Whether what is declared and what is registered agree.
+    doctor [--only <name>]
+                      Whether what is declared and what is registered agree,
+                      entry by entry. --only checks the manifests of that name
+                      and no other, which is what a tool checking its own wants.
     uninstall         Remove the registry and put back the hook that was here.
     version           Print the version.
 
