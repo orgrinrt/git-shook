@@ -1,0 +1,12 @@
+#!/usr/bin/env nutshell
+# Every suite under tests/, as one run: the base's, then the front's.
+#
+#   ./tests/run
+#   TEST_FILTER=paths ./tests/run
+
+use test log
+
+# Each suite runs itself when executed alone; inside this run it is only read.
+export _SHOOK_BASE_TEST_RUNNING=1 _SHOOK_TEST_RUNNING=1 _SHOOK_CHAIN_TEST_RUNNING=1
+test_run_dir "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+test_summary

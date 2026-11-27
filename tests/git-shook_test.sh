@@ -948,6 +948,8 @@ the_dispatcher_works_in_a_bare_repository() {
     mkdir -p "$b/shook/hooks"
     "$SHOOK" dispatcher > "$b/shook/hooks/pre-receive"
     chmod +x "$b/shook/hooks/pre-receive"
+    # and the base the dispatcher hands its chain to, which install copies in
+    cp "$(dirname "$SHOOK")/shook" "$b/shook/shook"
 
     local out; out="$(cd "$b" && ./shook/hooks/pre-receive </dev/null 2>&1 || true)"
 

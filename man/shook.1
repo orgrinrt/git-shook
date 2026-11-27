@@ -1,0 +1,52 @@
+.TH SHOOK 1 "2026" "shook 0.1.0" "User Commands"
+.SH NAME
+shook \- run a chain of commands in order, and stop at the first that fails
+.SH SYNOPSIS
+.B shook run
+.RB [ \-\-root
+.IR dir ]
+.RB [ \-\-stdin
+.BR none | replay | pass ]
+.I chain
+.RI [ arg ...]
+.br
+.B shook version
+.SH DESCRIPTION
+The base a front runs its chains on. A front, such as
+.BR git\-shook (1)
+for git's hooks, decides what a chain holds, when it runs and what its output
+means; shook runs it, and does nothing else.
+.PP
+A chain is a directory, and one that is absent or empty passes. Each regular
+file in it is an entry, run one at a time in the byte order of the names. An
+entry's first line is the directory it runs in, relative to
+.I \-\-root
+(the current directory by default), empty for the root itself, and every line
+after it is one argument, the first the program. An entry with no argument is
+skipped. The arguments after the chain are appended to every entry's own.
+.PP
+Stdin is
+.B none
+by default, every entry reading
+.IR /dev/null ;
+.B replay
+reads it once and gives every entry its own copy;
+.B pass
+lets the entries inherit it as it is. Stdout and stderr are the entries' own.
+.SH EXIT STATUS
+.TP
+.B 0
+Every entry passed, or there was none.
+.TP
+.B 64
+A mistake in the call.
+.TP
+.B 127
+An entry's directory could not be entered; the chain stops there.
+.TP
+.I other
+The status of the first entry that failed; the entries after it did not run.
+.SH SEE ALSO
+.BR git\-shook (1)
+.SH AUTHOR
+orgrinrt <orgrinrt@ikiuni.dev>
