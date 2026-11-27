@@ -258,6 +258,17 @@ repo_root() {
 	git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository"
 }
 
+# What an older git-shook kept in the shook directory and this one does not:
+# the base its dispatchers handed their entries to, and the conditions that
+# base read. One list, so install and uninstall clear the same names.
+LEFTOVERS="shook conditions"
+
+remove_leftovers() { # <shook dir>
+	for _l in $LEFTOVERS; do
+		rm -rf "${1:?}/$_l"
+	done
+}
+
 # Where the dispatcher, the entries and the kept hooks are generated.
 #
 # Inside the git directory, because a generated hook set is one clone's
@@ -648,11 +659,6 @@ EOF
 
 	mkdir -p "$sd/hooks" "$sd/entries"
 
-	# What a git-shook running on a base left beside the dispatchers: the base
-	# and its conditions. Every dispatcher is rewritten below, so nothing reads
-	# them any more.
-	rm -rf "$sd/shook" "$sd/conditions"
-
 	# A hook that is already there is moved in beside the others rather than
 	# replaced, so it keeps running and uninstall can put it back.
 	migrate_existing "$root" "$all_events" "$manifests"
@@ -709,6 +715,11 @@ EOF
 		dispatcher_text >"$sd/hooks/$ev"
 		chmod +x "$sd/hooks/$ev"
 	done
+
+	# Every dispatcher is this git-shook's now, so nothing reads what an older
+	# one left beside them. Removed only after the loop: an install stopped
+	# halfway leaves no dispatcher handing to a base that is gone.
+	remove_leftovers "$sd"
 
 	# An entry a manifest no longer declares stops running on the next install,
 	# so a hook taken out of a manifest is not left behind in the registry.
@@ -1205,6 +1216,14 @@ EOF
 		;;
 	esac
 
+	# What an older git-shook kept beside its dispatchers. Nothing reads it once
+	# they are rewritten, and install removes it.
+	for _l in $LEFTOVERS; do
+		[ -e "$sd/$_l" ] || continue
+		printf 'an older git-shook left %s, which nothing reads. Run `git shook install` to remove it.\n' "$sd/$_l"
+		bad=1
+	done
+
 	# An older git-shook generated at the repository root, where it showed up in
 	# everybody's `git status` and had to be ignored by hand. Install clears it,
 	# unless somebody committed it, in which case only they can.
@@ -1264,6 +1283,7 @@ cmd_uninstall() {
 	# registry, and are whatever the operator or a tool put there, so they stay
 	# and the next `install` picks them up again.
 	rm -rf "$sd/hooks" "$sd/entries" "$sd/kept" "$sd/declined" "$sd/from" "$sd/oldpath" "$sd/names" "$sd/answers"
+	remove_leftovers "$sd"
 	rmdir "$sd" 2>/dev/null || true
 	# And whatever an older git-shook left at the repository root, on the same
 	# terms `install` uses: a tracked one is somebody's committed file and not

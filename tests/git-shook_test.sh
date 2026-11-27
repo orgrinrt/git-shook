@@ -404,6 +404,19 @@ a_dispatcher_that_handed_its_chain_to_a_base_is_written_over_by_install() {
     rm -rf "$w"
 }
 
+# What a git-shook running on a base left at <event>: its own v3 dispatcher,
+# rendered from that release and kept as a fixture, the base it hands to, and
+# the base's conditions. The base here only says it ran.
+leftovers_of_a_base_install() { # <repo> <event>
+    local sd="$1/.git/shook"
+    cp "$(dirname "${BASH_SOURCE[0]}")/fixtures/dispatcher-v3" "$sd/hooks/$2"
+    chmod +x "$sd/hooks/$2"
+    printf '#!/bin/sh\necho BASE-RAN\n' > "$sd/shook"
+    chmod +x "$sd/shook"
+    mkdir -p "$sd/conditions/$2"
+    printf 'x\n' > "$sd/conditions/$2/one"
+}
+
 #[test]
 a_kept_hook_no_manifest_declares_gets_its_base_dispatcher_written_over() {
     local w; w="$(a_repo)"
@@ -412,20 +425,38 @@ a_kept_hook_no_manifest_declares_gets_its_base_dispatcher_written_over() {
     a_local_manifest "$w" one pre-commit true
     ( cd "$w" && "$SHOOK" install --yes >/dev/null ) || fail "install refused"
     test -f "$w/.git/shook/entries/commit-msg/00-existing" || fail "the hook was not kept"
-    # what a git-shook running on a base left: its dispatcher at the kept-only
-    # event, the base itself and its conditions
-    printf '#!/bin/sh\n# git-shook dispatcher v3\nbase="$g/shook/shook"\nexec "$base" "$@"\n' \
-        > "$w/.git/shook/hooks/commit-msg"
-    printf '#!/bin/sh\nexit 0\n' > "$w/.git/shook/shook"
-    chmod +x "$w/.git/shook/shook"
-    mkdir -p "$w/.git/shook/conditions"
+    printf '\nsh\n-c\necho HAND-RAN\n' > "$w/.git/shook/entries/commit-msg/50-by-hand"
+    leftovers_of_a_base_install "$w" commit-msg
+    # the control: the fixture is a working v3 dispatcher, handing to the base
+    assert_contains "$(cd "$w" && "${GIT_SCRUB[@]}" git commit -q --allow-empty -m before 2>&1)" "BASE-RAN"
+    local doc; doc="$(cd "$w" && "$SHOOK" doctor || true)"
+    assert_contains "$doc" "left $w/.git/shook/shook"
+    assert_contains "$doc" "left $w/.git/shook/conditions"
 
     ( cd "$w" && "$SHOOK" install --yes >/dev/null ) || fail "the second install refused"
     assert_fails grep -q '/shook/shook"' "$w/.git/shook/hooks/commit-msg"
     assert_fails test -e "$w/.git/shook/shook"
     assert_fails test -e "$w/.git/shook/conditions"
+    test -f "$w/.git/shook/manifests/one.toml" || fail "the manifest went with the leftovers"
+    test -f "$w/.git/shook/entries/commit-msg/50-by-hand" || fail "the hand-placed entry went with the leftovers"
     assert_contains "$(cd "$w" && "$SHOOK" doctor)" "all good"
-    assert_contains "$(cd "$w" && "${GIT_SCRUB[@]}" git commit -q --allow-empty -m kept 2>&1)" "KEPT-RAN"
+    local out; out="$(cd "$w" && "${GIT_SCRUB[@]}" git commit -q --allow-empty -m kept 2>&1)"
+    assert_contains "$out" "KEPT-RAN"
+    assert_contains "$out" "HAND-RAN"
+    rm -rf "$w"
+}
+
+#[test]
+uninstall_removes_what_a_git_shook_on_a_base_left_and_keeps_the_manifests() {
+    local w; w="$(a_repo)"
+    a_local_manifest "$w" one pre-commit true
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null ) || fail "install refused"
+    leftovers_of_a_base_install "$w" pre-commit
+
+    ( cd "$w" && "$SHOOK" uninstall --yes >/dev/null ) || fail "uninstall refused"
+    assert_fails test -e "$w/.git/shook/shook"
+    assert_fails test -e "$w/.git/shook/conditions"
+    test -f "$w/.git/shook/manifests/one.toml" || fail "uninstall took the manifests"
     rm -rf "$w"
 }
 
