@@ -73,6 +73,31 @@ run = ["sh", "scripts/watchman-query.sh"]
 
 What runs an event's entries is `shook`, which knows nothing about git. A front works out what a chain holds and when it runs, and `shook run <chain>` runs it: a directory of entries in the byte order of their names, each a working directory and an argument list, with the caller's arguments appended, stdin given to none of them, replayed to each or passed through as it is, stdout and stderr left alone, and the first failure stopping the rest and becoming the exit status. That is all of it, written out as a numbered list at the top of the script, and kept that small so a second implementation of it can be held to the same suite. git-shook is one front. Everything about git, which events feed stdin, which paths an event touched and which entries they select, and the one event whose stdout is a protocol, stays in the front, and `install` copies the base in beside the dispatchers so a hook needs nothing on `PATH` when it fires.
 
+The base is the `shook` script in this repository, and it is the one implementation there is. Should a second one be written, in Rust or anything else, it lives here too, held to `tests/shook_test.sh` (`SHOOK_BASE=<it> ./tests/shook_test.sh`), and installs under the same name, so a front never chooses between two. A front finds the base the same way whichever it is: git-shook takes the `shook` beside its own script, else the first on `PATH`, and copies that one in; claude-shook takes `SHOOK_BASE` where it is set, else the `shook` beside its binary, else the first on `PATH`.
+
+## The Claude Code front
+
+`claude-shook/` is a second front, for the hooks of Claude Code, written in Rust since what it does with JSON is more than a shell script should carry. The host registers one call per event, `claude-shook run <Event>`, and the front runs that event's entries as a chain on the base and answers the host once, the way the host would have folded the answers of hooks registered side by side: an entry exiting 2 blocks and stops the chain, a `deny` beats an `ask` beats an `allow`, every piece of context is kept, and an entry that failed some other way or ran past its timeout is named to the person while the call goes ahead. Entries run one after another, in the order the chain gives.
+
+```bash
+cargo install --path claude-shook
+```
+
+A tool puts a manifest in `.claude/shook/manifests/` of the project, one array per event as the host names it, and runs `claude-shook install`, which writes the entries beside it and one registration per event into `.claude/settings.local.json`, keeping every hook it did not write.
+
+```toml
+name = "guards"
+
+[[PreToolUse]]
+name    = "keep-the-build-off"
+run     = ["scripts/keep-the-build-off"]
+matcher = "Bash"
+paths   = ["engine"]
+timeout = 30
+```
+
+`matcher` is read as the host reads one. `paths` narrows the entry to calls landing under one of those directories: a file tool's file, a shell call's directory and every path its command names. `dir` makes it run in a directory under the project rather than the session's own, and `timeout` is in seconds, 60 where it is absent. Where `claude-shook` is not on the host's `PATH`, or no base is found, the registration says so in one line and the call goes ahead, since refusing every call would leave a session no way to install it. `claude-shook/README.md` has the rest.
+
 ## Contributing
 
 Issues and pull requests are welcome, and it is cheaper to open an issue first if the change is a big one. The suites run with `./tests/run`, need [nutshell](https://github.com/orgrinrt/nutshell) on the path, and build their repositories in temporary directories. `tests/shook_test.sh` is the base's whole behaviour, and `SHOOK_BASE=<path>` runs it against another implementation.
