@@ -19,6 +19,10 @@ _git_shook() {
 		COMPREPLY=($(compgen -W "--yes --only" -- "$cur"))
 		return
 		;;
+	doctor)
+		COMPREPLY=($(compgen -W "--only" -- "$cur"))
+		return
+		;;
 	esac
 
 	if [ "$COMP_CWORD" -le 2 ]; then

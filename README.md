@@ -1,4 +1,4 @@
-# `git-shook`
+| `git shook doctor` | check that what is declared and what is registered agree, entry by entry, `--only <name>` to check just that manifest |# `git-shook`
 
 > A hook dispatcher for git, one per event with a registry beside it, so several tools can share a hook instead of replacing each other. Two POSIX shell scripts, the git front and `shook`, the chain runner under it.
 

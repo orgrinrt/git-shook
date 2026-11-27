@@ -8,6 +8,8 @@ git-shook \- run several tools at one git hook event
 .B git shook list
 .br
 .B git shook doctor
+.RB [ \-\-only
+.IR name ]
 .br
 .B git shook uninstall
 .br
@@ -53,8 +55,16 @@ declaration does not also say yes to one that arrived through a merge.
 What is registered, per event, in the order it runs.
 .TP
 .B doctor
-Whether what the manifests declare and what is registered still agree. Exits
-non\-zero when they do not.
+.RB [ \-\-only
+.IR name ]
+Whether what the manifests declare and what is registered still agree, entry by
+entry, with each dispatcher this git\-shook's and the base the one beside it.
+Exits non\-zero when they do not.
+.B \-\-only
+checks the manifests of that name and no other, as
+.B install \-\-only
+registers them, so a tool checks its own registration without failing on
+another's.
 .TP
 .B uninstall
 Remove the registry, clear
