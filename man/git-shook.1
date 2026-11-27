@@ -1,4 +1,4 @@
-.TH GIT-SHOOK 1 "2026-09-05" "git-shook 0.1.0" "Git Extensions"
+.TH GIT-SHOOK 1 "2026-09-05" "git-shook 0.2.0" "Git Extensions"
 .SH NAME
 git-shook \- run several tools at one git hook event
 .SH SYNOPSIS
@@ -65,6 +65,11 @@ checks the manifests of that name and no other, as
 .B install \-\-only
 registers them, so a tool checks its own registration without failing on
 another's.
+A name no manifest has is named and exits non\-zero, and a flag doctor does not
+take is refused, so a caller can tell this doctor from one that checks less:
+asked with
+.B \-\-only
+and a name no manifest can have, it answers non\-zero.
 .TP
 .B uninstall
 Remove the registry, clear

@@ -1,0 +1,5 @@
+name = "claude-shook"
+
+[hooks.pre-commit]
+run = ["cargo", "test", "-q"]
+paths = ["claude-shook/*"]

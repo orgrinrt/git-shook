@@ -4,9 +4,8 @@
 # SPDX-License-Identifier: MPL-2.0        https://mozilla.org/MPL/2.0        contact@hiisi.digital
 #----------------------------------------------------------------------------------------------------
 #
-# Put git-shook, the shook base it runs on, its man page and its completions
-# somewhere git and the shell
-# will find them.
+# Put git-shook, the shook base it runs on, its man page, its completions and,
+# where cargo is, claude-shook somewhere git and the shell will find them.
 #
 #   ./install                 into ~/.local
 #   ./install /usr/local      somewhere else
@@ -39,6 +38,19 @@ install_file "$here/man/git-shook.1" "$man1/git-shook.1" 644
 install_file "$here/man/shook.1" "$man1/shook.1" 644
 install_file "$here/completions/git-shook.bash" "$bashcomp/git-shook" 644
 install_file "$here/completions/_git-shook" "$zshcomp/_git-shook" 644
+
+# claude-shook, the Claude Code front, is Rust: built where cargo is, beside the
+# base it runs on, and said to be left out where it is not. git-shook needs
+# nothing of it.
+if command -v cargo >/dev/null 2>&1; then
+	if (cd "$here/claude-shook" && cargo install --quiet --locked --path . --root "$prefix"); then
+		printf '  %s\n' "$bin/claude-shook"
+	else
+		printf 'claude-shook did not build, so the Claude Code front is not installed; git-shook is\n'
+	fi
+else
+	printf 'cargo is not on PATH, so claude-shook, the Claude Code front, is not installed; git-shook is\n'
+fi
 
 printf '\n'
 case ":$PATH:" in
