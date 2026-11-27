@@ -171,3 +171,13 @@ fn a_manifest_the_front_refuses_leaves_the_registry_and_the_settings_as_they_wer
     assert_eq!(std::fs::read_to_string(p.0.join(".claude/settings.local.json")).unwrap(), before);
     assert!(p.0.join(".claude/shook/entries/Stop/t--000-a").is_file());
 }
+
+#[test]
+fn root_in_an_argument_is_the_project_wherever_the_session_is() {
+    let p = project("[[Stop]]\nname = \"a\"\nrun = [\"sh\", \"{root}/tool.sh\", \"{root}\"]\n");
+    std::fs::write(p.0.join("tool.sh"), "printf '%s' \"$1\" > \"$1/got\"\n").unwrap();
+    let payload = format!(r#"{{"cwd": "{}/engine"}}"#, p.0.display());
+    let out = run(&p, "Stop", &payload);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(std::fs::read_to_string(p.0.join("got")).unwrap(), p.0.display().to_string());
+}

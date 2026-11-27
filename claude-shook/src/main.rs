@@ -91,6 +91,7 @@ fn run_cmd(args: &[String]) -> i32 {
     let root = root
         .or_else(|| std::env::var_os("CLAUDE_PROJECT_DIR").filter(|d| !d.is_empty()).map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
+    let root = std::path::absolute(&root).unwrap_or(root);
     let a = run::run(&root, event);
     let _ = std::io::stdout().write_all(a.stdout.as_bytes());
     let _ = std::io::stderr().write_all(a.stderr.as_bytes());

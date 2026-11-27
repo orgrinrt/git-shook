@@ -95,7 +95,7 @@ fn chain(
         let dir = tmp.join(format!("chain-{round}"));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         for e in &pending {
-            std::fs::write(dir.join(&e.name), step_entry(&me, &rec, e)?).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join(&e.name), step_entry(root, &me, &rec, e)?).map_err(|e| e.to_string())?;
         }
         let (status, stderr) = run_base(root, base, &dir, payload)?;
         let mut rest: Vec<&Entry> = Vec::new();
@@ -136,8 +136,10 @@ fn chain(
 }
 
 /// The entry `e` as a step: its own directory, then this program's `step`
-/// verb in front of its argument list.
-fn step_entry(me: &Path, rec: &Path, e: &Entry) -> Result<String, String> {
+/// verb in front of its argument list, with `{root}` in any argument read as
+/// the project root, so a manifest naming a program under the project stays
+/// right wherever the project is moved.
+fn step_entry(root: &Path, me: &Path, rec: &Path, e: &Entry) -> Result<String, String> {
     let text = std::fs::read_to_string(&e.file).map_err(|x| format!("{}: {x}", e.file.display()))?;
     let mut lines = text.lines();
     let dir = lines.next().unwrap_or(".");
@@ -147,7 +149,7 @@ fn step_entry(me: &Path, rec: &Path, e: &Entry) -> Result<String, String> {
     }
     out.push_str("--\n");
     for a in lines {
-        out.push_str(a);
+        out.push_str(&a.replace("{root}", &root.to_string_lossy()));
         out.push('\n');
     }
     Ok(out)
