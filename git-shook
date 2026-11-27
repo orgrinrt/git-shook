@@ -258,7 +258,6 @@ repo_root() {
 	git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository"
 }
 
-
 # Where the dispatcher, the entries and the kept hooks are generated.
 #
 # Inside the git directory, because a generated hook set is one clone's
@@ -638,7 +637,21 @@ EOF
 		esac
 	fi
 
+	# And an event with entries from an earlier install that nothing above
+	# names, such as a hook kept with no manifest at its event: its dispatcher
+	# is rewritten too, or one an older git-shook wrote stays there for good.
+	for _k in $KNOWN_EVENTS; do
+		[ -d "$sd/entries/$_k" ] || continue
+		case " $all_events " in *" $_k "*) continue ;; esac
+		all_events="$all_events $_k"
+	done
+
 	mkdir -p "$sd/hooks" "$sd/entries"
+
+	# What a git-shook running on a base left beside the dispatchers: the base
+	# and its conditions. Every dispatcher is rewritten below, so nothing reads
+	# them any more.
+	rm -rf "$sd/shook" "$sd/conditions"
 
 	# A hook that is already there is moved in beside the others rather than
 	# replaced, so it keeps running and uninstall can put it back.

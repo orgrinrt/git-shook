@@ -405,6 +405,31 @@ a_dispatcher_that_handed_its_chain_to_a_base_is_written_over_by_install() {
 }
 
 #[test]
+a_kept_hook_no_manifest_declares_gets_its_base_dispatcher_written_over() {
+    local w; w="$(a_repo)"
+    printf '#!/bin/sh\necho KEPT-RAN\n' > "$w/.git/hooks/commit-msg"
+    chmod +x "$w/.git/hooks/commit-msg"
+    a_local_manifest "$w" one pre-commit true
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null ) || fail "install refused"
+    test -f "$w/.git/shook/entries/commit-msg/00-existing" || fail "the hook was not kept"
+    # what a git-shook running on a base left: its dispatcher at the kept-only
+    # event, the base itself and its conditions
+    printf '#!/bin/sh\n# git-shook dispatcher v3\nbase="$g/shook/shook"\nexec "$base" "$@"\n' \
+        > "$w/.git/shook/hooks/commit-msg"
+    printf '#!/bin/sh\nexit 0\n' > "$w/.git/shook/shook"
+    chmod +x "$w/.git/shook/shook"
+    mkdir -p "$w/.git/shook/conditions"
+
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null ) || fail "the second install refused"
+    assert_fails grep -q '/shook/shook"' "$w/.git/shook/hooks/commit-msg"
+    assert_fails test -e "$w/.git/shook/shook"
+    assert_fails test -e "$w/.git/shook/conditions"
+    assert_contains "$(cd "$w" && "$SHOOK" doctor)" "all good"
+    assert_contains "$(cd "$w" && "${GIT_SCRUB[@]}" git commit -q --allow-empty -m kept 2>&1)" "KEPT-RAN"
+    rm -rf "$w"
+}
+
+#[test]
 a_persons_own_fsmonitor_hook_kept_by_install_is_the_answer() {
     local w; w="$(an_fsmonitor_repo)"
     printf '#!/bin/sh\nprintf "MINE\\0f2\\0"\n' > "$w/.git/hooks/fsmonitor-watchman"
