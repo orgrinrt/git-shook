@@ -114,6 +114,24 @@ common git directory;
 unsets it again when it names the dispatcher, and
 .B doctor
 reports one naming a dispatcher that is gone.
+.PP
+.I paths
+is a list of globs, and an entry carrying it runs only when the event touched a
+path one of them matches: what is staged at
+.B pre\-commit
+and
+.BR commit\-msg ,
+and at
+.B pre\-push
+every path a pushed tip adds over its remote, or everything the tip carries
+where the remote has never seen it. No other event touches paths, so
+.I paths
+anywhere else is refused. An argument that is exactly
+.B {paths}
+becomes the matching paths, one argument each, and is refused in an entry with
+no
+.IR paths .
+A glob is a shell pattern over the whole path.
 .SH FILES
 .TP
 .I shook.toml
@@ -129,6 +147,21 @@ committed nor something anybody has to ignore.
 .I .git/shook/entries/<event>/<name>
 One registered entry. The first line is the working directory relative to the
 repository root, and every line after it is one argument.
+.TP
+.I .git/shook/conditions/<event>/<name>
+The globs of an entry registered with
+.IR paths ,
+one per line.
+.TP
+.I .git/shook/shook
+The base every dispatcher hands its chain to, copied in by
+.B install
+from the
+.B shook
+beside
+.B git\-shook
+or on
+.IR PATH .
 .TP
 .I .git/shook/answers/<event>
 The name of the entry that answers the event's protocol on stdout.
@@ -171,6 +204,7 @@ one argument per line, and such a manifest is refused rather than silently
 turned into two arguments.
 .SH SEE ALSO
 .BR githooks (5),
-.BR git-config (1)
+.BR git\-config (1),
+.BR shook (1)
 .SH AUTHOR
 orgrinrt <orgrinrt@ikiuni.dev>

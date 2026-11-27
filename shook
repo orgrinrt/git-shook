@@ -1,0 +1,139 @@
+#!/bin/sh
+#----------------------------------------------------------------------------------------------------
+# Copyright (c) 2026                          orgrinrt                          orgrinrt@ikiuni.dev
+# SPDX-License-Identifier: MPL-2.0        https://mozilla.org/MPL/2.0        contact@hiisi.digital
+#----------------------------------------------------------------------------------------------------
+#
+# shook: run a chain of commands in order, and stop at the first that fails.
+#
+# The base every front runs on. A front, such as git-shook for git's hooks,
+# decides what a chain holds, when it runs and what its output means; the base
+# only runs it. What it does is the whole list below, kept short on purpose so a
+# second implementation of it can be held to the same suite, `tests/shook_test.sh`:
+#
+#   1. A chain is a directory. One that is absent, or holds no entry, passes.
+#   2. Each regular file in it is an entry, and entries run one at a time in the
+#      byte order of their names.
+#   3. An entry's first line is the directory it runs in, relative to the root,
+#      empty for the root itself. Every line after it is one argument, the first
+#      the program. An entry with no argument is skipped.
+#   4. The arguments given after the chain are appended to every entry's own.
+#   5. Stdin is one of three: `none`, every entry reads /dev/null; `replay`, it
+#      is read once and every entry reads its own copy; `pass`, entries inherit
+#      it as it is.
+#   6. Stdout and stderr are the entries' own, passed through untouched.
+#   7. The first entry to exit non-zero stops the chain, and its exit status is
+#      the chain's. A directory that cannot be entered is an exit of 127.
+#   8. A chain that ran through exits 0. A mistake in the call exits 64.
+#
+# POSIX sh throughout, since a chain runs where nothing may be installed but a
+# shell.
+
+set -u
+
+VERSION=0.1.0
+
+usage() {
+	cat <<'HELPTEXT'
+shook: run a chain of commands in order, and stop at the first that fails.
+
+USAGE
+    shook run [--root <dir>] [--stdin none|replay|pass] <chain> [<arg>...]
+    shook version
+
+A chain is a directory of entries, run in the byte order of their names. An
+entry's first line is the directory it runs in, relative to --root (the current
+directory by default); each line after it is one argument. The arguments after
+the chain are appended to every entry. Stdin is none by default.
+
+The first entry to fail stops the chain and its exit status is shook's.
+HELPTEXT
+}
+
+refuse() {
+	printf 'shook: %s\n' "$1" >&2
+	exit 64
+}
+
+run_chain() {
+	root=$(pwd)
+	mode=none
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--root)
+			[ $# -ge 2 ] || refuse "--root takes a directory"
+			root=$2
+			shift 2
+			;;
+		--stdin)
+			[ $# -ge 2 ] || refuse "--stdin takes none, replay or pass"
+			case $2 in
+			none | replay | pass) mode=$2 ;;
+			*) refuse "--stdin takes none, replay or pass, found $2" ;;
+			esac
+			shift 2
+			;;
+		--)
+			shift
+			break
+			;;
+		-*) refuse "unknown flag: $1" ;;
+		*) break ;;
+		esac
+	done
+	[ $# -ge 1 ] || refuse "run takes a chain"
+	chain=$1
+	shift
+	[ -e "$chain" ] || exit 0
+	[ -d "$chain" ] || refuse "the chain is not a directory: $chain"
+
+	# Byte order means one thing only if the collation is fixed.
+	LC_ALL=C
+	export LC_ALL
+
+	tmp=$(mktemp -d 2>/dev/null || mktemp -d -t shook) || exit 1
+	trap 'rm -rf "$tmp"' EXIT
+	for a in "$@"; do printf '%s\n' "$a"; done >"$tmp/argv"
+	in=/dev/null
+	case $mode in
+	replay)
+		in="$tmp/stdin"
+		cat >"$in"
+		;;
+	pass) in=- ;;
+	esac
+
+	for e in "$chain"/*; do
+		[ -f "$e" ] || continue
+		wd=$(head -n 1 "$e")
+		tail -n +2 "$e" >"$tmp/entry"
+		set --
+		while IFS= read -r a; do set -- "$@" "$a"; done <"$tmp/entry"
+		[ $# -gt 0 ] || continue
+		while IFS= read -r a; do set -- "$@" "$a"; done <"$tmp/argv"
+		if [ "$in" = - ]; then
+			(cd "$root/$wd" 2>/dev/null || exit 127; exec "$@")
+		else
+			(cd "$root/$wd" 2>/dev/null || exit 127; exec "$@") <"$in"
+		fi
+		st=$?
+		[ "$st" -eq 0 ] || exit "$st"
+	done
+	exit 0
+}
+
+case "${1:-}" in
+run)
+	shift
+	run_chain "$@"
+	;;
+version | --version | -V)
+	printf 'shook %s\n' "$VERSION"
+	;;
+help | --help | -h | "")
+	usage
+	;;
+*)
+	refuse "unknown command: $1 (try \`shook help\`)"
+	;;
+esac
