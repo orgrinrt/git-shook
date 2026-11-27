@@ -10,11 +10,10 @@ use test log
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 #[test]
-install_places_git_shook_and_the_base() {
+install_places_git_shook_and_its_man_page() {
     local p; p="$(mktemp -d)"
     assert_exits 0 sh -c "'$HERE/install' '$p' >/dev/null"
     assert_exits 0 test -x "$p/bin/git-shook"
-    assert_exits 0 test -x "$p/bin/shook"
     assert_exits 0 test -f "$p/share/man/man1/git-shook.1"
     rm -rf "$p"
 }

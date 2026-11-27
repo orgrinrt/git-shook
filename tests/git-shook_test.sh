@@ -372,6 +372,20 @@ a_manifest_selecting_by_paths_is_refused_before_anything_moves() {
 }
 
 #[test]
+the_dispatcher_runs_its_entries_itself_and_install_copies_nothing_beside_it() {
+    local w; w="$(a_repo)"
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "one"\n\n[hooks.pre-commit]\nrun = ["true"]\n' \
+        > "$w/.git/shook/manifests/one.toml"
+
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null ) || fail "install refused"
+    assert_fails test -e "$w/.git/shook/shook"
+    assert_fails grep -q '/shook/shook"' "$w/.git/shook/hooks/pre-commit"
+    assert_contains "$(cat "$w/.git/shook/hooks/pre-commit")" "git-shook dispatcher v2"
+    rm -rf "$w"
+}
+
+#[test]
 a_persons_own_fsmonitor_hook_kept_by_install_is_the_answer() {
     local w; w="$(an_fsmonitor_repo)"
     printf '#!/bin/sh\nprintf "MINE\\0f2\\0"\n' > "$w/.git/hooks/fsmonitor-watchman"
@@ -961,8 +975,6 @@ the_dispatcher_works_in_a_bare_repository() {
     mkdir -p "$b/shook/hooks"
     "$SHOOK" dispatcher > "$b/shook/hooks/pre-receive"
     chmod +x "$b/shook/hooks/pre-receive"
-    # and the base the dispatcher hands its chain to, which install copies in
-    cp "$(dirname "$SHOOK")/shook" "$b/shook/shook"
 
     local out; out="$(cd "$b" && ./shook/hooks/pre-receive </dev/null 2>&1 || true)"
 

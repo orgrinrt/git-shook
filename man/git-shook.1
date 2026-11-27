@@ -58,7 +58,7 @@ What is registered, per event, in the order it runs.
 .RB [ \-\-only
 .IR name ]
 Whether what the manifests declare and what is registered still agree, entry by
-entry, with each dispatcher this git\-shook's and the base the one beside it.
+entry, with each dispatcher this git\-shook's.
 Exits non\-zero when they do not.
 .B \-\-only
 checks the manifests of that name and no other, as
@@ -145,16 +145,6 @@ committed nor something anybody has to ignore.
 One registered entry. The first line is the working directory relative to the
 repository root, and every line after it is one argument.
 .TP
-.I .git/shook/shook
-The base every dispatcher hands its chain to, copied in by
-.B install
-from the
-.B shook
-beside
-.B git\-shook
-or on
-.IR PATH .
-.TP
 .I .git/shook/answers/<event>
 The name of the entry that answers the event's protocol on stdout.
 .TP
@@ -196,7 +186,6 @@ one argument per line, and such a manifest is refused rather than silently
 turned into two arguments.
 .SH SEE ALSO
 .BR githooks (5),
-.BR git\-config (1),
-.BR shook (1)
+.BR git-config (1)
 .SH AUTHOR
 orgrinrt <orgrinrt@ikiuni.dev>
