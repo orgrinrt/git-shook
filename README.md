@@ -79,9 +79,7 @@ The base is the `shook` script in this repository, and it is the one implementat
 
 `claude-shook/` is a second front, for the hooks of Claude Code, written in Rust since what it does with JSON is more than a shell script should carry. The host registers one call per event, `claude-shook run <Event>`, and the front runs that event's entries as a chain on the base and answers the host once, the way the host would have folded the answers of hooks registered side by side: an entry exiting 2 blocks and stops the chain, a `deny` beats an `ask` beats an `allow`, every piece of context is kept, and an entry that failed some other way or ran past its timeout is named to the person while the call goes ahead. Entries run one after another, in the order the chain gives.
 
-```bash
-cargo install --path claude-shook
-```
+`./install` builds it into the same `bin` as git-shook and `shook` where cargo is there, and says it left it out where not; the crate pins its toolchain in `claude-shook/rust-toolchain.toml`.
 
 A tool puts a manifest in `.claude/shook/manifests/` of the project, one array per event as the host names it, and runs `claude-shook install`, which writes the entries beside it and one registration per event into `.claude/settings.local.json`, keeping every hook it did not write.
 
@@ -96,7 +94,7 @@ paths   = ["engine"]
 timeout = 30
 ```
 
-`matcher` is read as the host reads one. `paths` narrows the entry to calls landing under one of those directories: a file tool's file, a shell call's directory and every path its command names. `dir` makes it run in a directory under the project rather than the session's own, and `timeout` is in seconds, 60 where it is absent. Where `claude-shook` is not on the host's `PATH`, or no base is found, the registration says so in one line and the call goes ahead, since refusing every call would leave a session no way to install it. `claude-shook/README.md` has the rest.
+`matcher` is read as the host reads one. `paths` narrows the entry to calls landing under one of those directories: a file tool's file, a shell call's directory and every path its command names. `dir` makes it run in a directory under the project rather than the session's own, and `timeout` is in seconds, 60 where it is absent. The registration runs claude-shook by the path the install found it at, and looks on `PATH` only where that file is gone, so a host whose `PATH` lacks it still runs every guard. Where it is in neither, or no base is found, it says so in one line and the call goes ahead, since refusing every call would leave a session no way to install it. `claude-shook/README.md` has the rest.
 
 ## Contributing
 

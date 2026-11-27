@@ -14,6 +14,17 @@
 //! paths   = ["engine"]
 //! timeout = 30
 //! ```
+//!
+//! Read here with `toml` and not through renki-config, which resolves one
+//! tool's settings from a flag, its environment, a repository's file, the
+//! person's file and a default. A manifest is not that: it is a row of a
+//! registry that other tools write into a project, many files read side by
+//! side, and the overlay merging that would carry it is not in renki-config
+//! yet. Nor does anything here belong under renki-dirs, whose roots are per
+//! person: the registry is the project's `.claude/shook/`, and a run's scratch
+//! is the system's temporary directory. The front's own two settings, the base
+//! (`SHOOK_BASE`) and the default timeout, are what a renki-config table would
+//! carry, and move there with the base onto renki.
 
 use std::path::Path;
 

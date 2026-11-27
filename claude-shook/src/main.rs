@@ -145,7 +145,11 @@ fn install_cmd(args: &[String]) -> i32 {
     let installed = registry::manifests(&state).and_then(|ms| {
         let current = settings::read(&settings_file)?;
         let events = registry::write(&root, &state, &ms)?;
-        settings::write(&settings_file, current, &events).map(|()| events)
+        // the registration runs the front by where it is, resolved once here
+        let front = std::env::current_exe()
+            .and_then(|e| e.canonicalize())
+            .map_err(|e| format!("this program's own path is not known: {e}"))?;
+        settings::write(&settings_file, current, &events, &front).map(|()| events)
     });
     match installed {
         Ok(events) => {

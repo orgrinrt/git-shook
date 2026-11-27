@@ -7,10 +7,11 @@ Claude Code runs every hook registered for an event, each a process of its own, 
 ## Install
 
 ```bash
-cargo install --path claude-shook
+./install                                # with git-shook, where cargo is
+cargo install --locked --path claude-shook   # or alone
 ```
 
-It runs on the `shook` base that comes with git-shook, and finds it by `SHOOK_BASE` where that is set, else a `shook` beside the binary, else the first one on `PATH`.
+The crate pins its toolchain in `rust-toolchain.toml`. It runs on the `shook` base that comes with git-shook, and finds it by `SHOOK_BASE` where that is set, else a `shook` beside the binary, else the first one on `PATH`.
 
 | Command | What it does |
 |---|---|
@@ -41,7 +42,7 @@ A file tool lands on its file. A shell call lands in the session's directory and
 
 An entry that exits 2 blocks, the chain stops there, and its stderr is the answer with whatever context the entries before it gave. Otherwise the answers fold the way the host folds hooks run side by side: `continue` is false where any entry says false, `deny` beats `defer` beats `ask` beats `allow`, a `block` decision beats none, and every `additionalContext`, `systemMessage`, `stopReason` and reason is kept, while any other key is the first entry's. Plain text on its own is handed on as it was, and beside JSON it joins the context at `SessionStart`, `UserPromptSubmit` and `PreCompact` and the message the person sees anywhere else. An entry that fails some other way, cannot be started or runs out of time is named to the person and the call goes ahead, as the host goes ahead past a failed hook. When nobody said anything, nothing is printed.
 
-The entries run one after another, so the registration's timeout is theirs added up, plus ten seconds. Where `claude-shook` is not on the host's `PATH`, or no base is found, the registration says so in one line and the call goes ahead, since refusing every call would leave a session no way to install it. `async` entries are refused, as an asynchronous hook is a registration of its own and this front writes one per event.
+The entries run one after another, so the registration's timeout is theirs added up, plus ten seconds. The registration runs claude-shook by the path the install found it at, and looks on `PATH` only where that file is gone, so a host whose `PATH` lacks it still runs every guard. Where it is in neither, or no base is found, it says so in one line and the call goes ahead, since refusing every call would leave a session no way to install it. `async` entries are refused, as an asynchronous hook is a registration of its own and this front writes one per event.
 
 ## License
 

@@ -150,14 +150,25 @@ fn without_a_base_the_front_says_so_in_one_line_and_the_call_goes_ahead() {
 }
 
 #[test]
-fn without_the_front_the_registration_says_so_and_the_call_goes_ahead() {
-    let p = project("[[Stop]]\nname = \"a\"\nrun = [\"true\"]\n");
+fn the_registration_runs_the_front_by_where_the_install_found_it() {
+    let p = project("[[Stop]]\nname = \"a\"\nrun = [\"sh\", \"-c\", \"touch ran\"]\ndir = \".\"\n");
     let settings: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(p.0.join(".claude/settings.local.json")).unwrap()).unwrap();
     let cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap().to_string();
-    let out = Command::new("/bin/sh").args(["-c", &cmd]).env("PATH", "/usr/bin:/bin").output().unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    assert!(text(&out.stderr).contains("claude-shook is not on PATH, so the Stop hooks did not run"));
+    let front = std::fs::canonicalize(FRONT).unwrap();
+    assert!(cmd.contains(&front.display().to_string()), "{cmd}");
+    // a host whose PATH has no claude-shook still runs the guards
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", &cmd])
+        .env("PATH", "/usr/bin:/bin")
+        .env("CLAUDE_PROJECT_DIR", &p.0)
+        .env("SHOOK_BASE", BASE)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"{}").unwrap();
+    assert!(child.wait().unwrap().success());
+    assert!(p.0.join("ran").exists(), "the entry did not run");
 }
 
 #[test]

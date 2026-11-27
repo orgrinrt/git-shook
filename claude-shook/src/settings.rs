@@ -15,21 +15,22 @@ use serde_json::{Map, Value, json};
 use crate::matcher;
 use crate::registry::Entry;
 
-const GUARD: &str = "command -v claude-shook >/dev/null 2>&1 || { echo ";
-
-/// The command registered at `event`. Where claude-shook is not on the host's
-/// `PATH` it says so in one line and exits 1, which the host shows the person
-/// and goes ahead past: an absent front passes, since refusing every call
-/// would leave a session no way to install it.
-pub fn command(event: &str) -> String {
+/// The command registered at `event`. It runs the front by the absolute path
+/// the install resolved, so a host whose `PATH` lacks it still runs every
+/// guard, and looks on `PATH` only where that file is gone. Where neither has
+/// it, it says so in one line and exits 1, which the host shows the person and
+/// goes ahead past: an absent front passes, since refusing every call would
+/// leave a session no way to install it.
+pub fn command(event: &str, front: &Path) -> String {
+    let at = front.to_string_lossy().replace('\'', "'\\''");
     format!(
-        "{GUARD}'claude-shook is not on PATH, so the {event} hooks did not run; install it, then run claude-shook install' >&2; exit 1; }}; exec claude-shook run {event}"
+        "f='{at}'; [ -x \"$f\" ] || f=$(command -v claude-shook) || {{ echo 'claude-shook is neither at {at} nor on PATH, so the {event} hooks did not run; install it, then run claude-shook install' >&2; exit 1; }}; exec \"$f\" run {event}"
     )
 }
 
 /// Whether `cmd` is a registration this front wrote.
 pub fn ours(cmd: &str) -> bool {
-    cmd.starts_with(GUARD) && cmd.contains("; exec claude-shook run ")
+    cmd.starts_with("f='") && cmd.contains("; exec \"$f\" run ")
 }
 
 /// Seconds the host waits for the whole chain: the entries run one after
@@ -40,7 +41,7 @@ pub fn timeout(entries: &[Entry]) -> u64 {
 
 /// `settings` with this front's registrations replaced by one per event in
 /// `events`.
-pub fn registered(mut settings: Value, events: &[(String, Vec<Entry>)]) -> Result<Value, String> {
+pub fn registered(mut settings: Value, events: &[(String, Vec<Entry>)], front: &Path) -> Result<Value, String> {
     let top = settings.as_object_mut().ok_or("the settings file does not hold an object")?;
     let hooks = top.entry("hooks").or_insert_with(|| Value::Object(Map::new()));
     let hooks = hooks.as_object_mut().ok_or("`hooks` is not an object")?;
@@ -75,7 +76,7 @@ pub fn registered(mut settings: Value, events: &[(String, Vec<Entry>)]) -> Resul
         }
         group.insert(
             "hooks".into(),
-            json!([{"type": "command", "command": command(event), "timeout": timeout(entries)}]),
+            json!([{"type": "command", "command": command(event, front), "timeout": timeout(entries)}]),
         );
         let list = hooks.entry(event.clone()).or_insert_with(|| Value::Array(Vec::new()));
         list.as_array_mut()
@@ -96,9 +97,9 @@ pub fn read(path: &Path) -> Result<Value, String> {
 }
 
 /// `settings`, read from `path`, with `events` registered, written back.
-pub fn write(path: &Path, settings: Value, events: &[(String, Vec<Entry>)]) -> Result<(), String> {
+pub fn write(path: &Path, settings: Value, events: &[(String, Vec<Entry>)], front: &Path) -> Result<(), String> {
     let shown = path.display();
-    let out = registered(settings, events).map_err(|e| format!("{shown}: {e}"))?;
+    let out = registered(settings, events, front).map_err(|e| format!("{shown}: {e}"))?;
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
     }
@@ -109,6 +110,8 @@ pub fn write(path: &Path, settings: Value, events: &[(String, Vec<Entry>)]) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FRONT: &str = "/opt/it's/claude-shook";
     use crate::matcher::Matcher;
 
     fn entry(m: &str, t: u64) -> Entry {
@@ -127,8 +130,8 @@ mod tests {
         let mine = json!({"type": "command", "command": "my-guard"});
         let start = json!({"permissions": {"allow": ["Bash(ls)"]}, "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [mine]}]}});
         let events = vec![("PreToolUse".to_string(), vec![entry("Bash", 5), entry("Edit", 7)]), ("Stop".to_string(), vec![entry("", 60)])];
-        let once = registered(start.clone(), &events).unwrap();
-        let twice = registered(once.clone(), &events).unwrap();
+        let once = registered(start.clone(), &events, Path::new(FRONT)).unwrap();
+        let twice = registered(once.clone(), &events, Path::new(FRONT)).unwrap();
         assert_eq!(once, twice);
         assert_eq!(once["permissions"], start["permissions"]);
         let pre = once["hooks"]["PreToolUse"].as_array().unwrap();
@@ -143,10 +146,10 @@ mod tests {
     #[test]
     fn an_event_whose_entries_are_gone_loses_its_registration_and_nothing_else() {
         let events = vec![("Stop".to_string(), vec![entry("", 1)])];
-        let with = registered(json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "kept"}]}]}}), &events).unwrap();
-        let without = registered(with, &[]).unwrap();
+        let with = registered(json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "kept"}]}]}}), &events, Path::new(FRONT)).unwrap();
+        let without = registered(with, &[], Path::new(FRONT)).unwrap();
         assert_eq!(without, json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "kept"}]}]}}));
-        let alone = registered(registered(json!({}), &events).unwrap(), &[]).unwrap();
+        let alone = registered(registered(json!({}), &events, Path::new(FRONT)).unwrap(), &[], Path::new(FRONT)).unwrap();
         assert_eq!(alone, json!({"hooks": {}}));
     }
 
@@ -154,6 +157,37 @@ mod tests {
     fn a_command_merely_naming_claude_shook_is_not_ours() {
         assert!(!ours("claude-shook run Stop"));
         assert!(!ours("echo exec claude-shook run Stop"));
-        assert!(ours(&command("Stop")));
+        assert!(ours(&command("Stop", Path::new(FRONT))));
+    }
+
+    fn sh(cmd: &str, path: &str) -> std::process::Output {
+        std::process::Command::new("/bin/sh").args(["-c", cmd]).env("PATH", path).output().unwrap()
+    }
+
+    #[test]
+    fn the_front_runs_by_its_absolute_path_and_is_looked_for_on_path_only_where_that_is_gone() {
+        let dir = crate::scratch::dir("front");
+        let at = dir.join("it's here").join("claude-shook");
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(&at, "#!/bin/sh\necho ran \"$@\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // a PATH with no claude-shook on it: the absolute path runs it
+        let out = sh(&command("Stop", &at), "/usr/bin:/bin");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "ran run Stop\n");
+        // gone from there and on PATH under its name: PATH finds it
+        let elsewhere = dir.join("bin");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::rename(&at, elsewhere.join("claude-shook")).unwrap();
+        let out = sh(&command("Stop", &at), &format!("{}:/usr/bin:/bin", elsewhere.display()));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "ran run Stop\n");
+        // in neither: one line, and the call goes ahead
+        let out = sh(&command("Stop", &at), "/usr/bin:/bin");
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("so the Stop hooks did not run"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
