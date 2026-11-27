@@ -386,6 +386,25 @@ the_dispatcher_runs_its_entries_itself_and_install_copies_nothing_beside_it() {
 }
 
 #[test]
+a_dispatcher_that_handed_its_chain_to_a_base_is_written_over_by_install() {
+    local w; w="$(a_repo)"
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "one"\n\n[hooks.pre-commit]\nrun = ["sh", "-c", "echo ONE-RAN"]\n' \
+        > "$w/.git/shook/manifests/one.toml"
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null ) || fail "install refused"
+    # what a git-shook running on a base left: a dispatcher handing to it
+    printf '#!/bin/sh\n# git-shook dispatcher v3\nbase="$g/shook/shook"\nexit 1\n' \
+        > "$w/.git/shook/hooks/pre-commit"
+    assert_contains "$(cd "$w" && "$SHOOK" doctor || true)" "the pre-commit dispatcher was written by another git-shook"
+
+    ( cd "$w" && "$SHOOK" install --yes >/dev/null ) || fail "the second install refused"
+    assert_fails grep -q '/shook/shook"' "$w/.git/shook/hooks/pre-commit"
+    assert_contains "$(cd "$w" && "$SHOOK" doctor)" "all good"
+    assert_contains "$(cd "$w" && "${GIT_SCRUB[@]}" git commit -q --allow-empty -m second 2>&1)" "ONE-RAN"
+    rm -rf "$w"
+}
+
+#[test]
 a_persons_own_fsmonitor_hook_kept_by_install_is_the_answer() {
     local w; w="$(an_fsmonitor_repo)"
     printf '#!/bin/sh\nprintf "MINE\\0f2\\0"\n' > "$w/.git/hooks/fsmonitor-watchman"
