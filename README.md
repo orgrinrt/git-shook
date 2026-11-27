@@ -1,6 +1,6 @@
-| `git shook doctor` | check that what is declared and what is registered agree, entry by entry, `--only <name>` to check just that manifest |# `git-shook`
+# `git-shook`
 
-> A hook dispatcher for git, one per event with a registry beside it, so several tools can share a hook instead of replacing each other. Two POSIX shell scripts, the git front and `shook`, the chain runner under it.
+> A hook dispatcher for git, one per event with a registry beside it, so several tools can share a hook instead of replacing each other. A single POSIX shell script.
 
 Git runs one program per hook event, which means whichever tool installed last owns `pre-commit` and the one before it is gone without any message. git-shook puts a dispatcher at the event and lets every tool register next to the others, so a repository can have a formatter, a linter and a header tool on the same commit without any of them knowing about the rest.
 
@@ -8,13 +8,11 @@ A project says what it wants run in a `shook.toml` that is committed with the tr
 
 ## Usage
 
-`git shook` works through anything on `PATH` called `git-shook`, with `shook` beside it or on `PATH` too, so the two scripts are enough.
+`git shook` works through anything on `PATH` called `git-shook`, so the script alone is enough.
 
 ```bash
-for f in git-shook shook; do
-    curl -fsSL "https://raw.githubusercontent.com/orgrinrt/git-shook/main/$f" -o ~/.local/bin/$f
-    chmod +x ~/.local/bin/$f
-done
+curl -fsSL https://raw.githubusercontent.com/orgrinrt/git-shook/main/git-shook -o ~/.local/bin/git-shook
+chmod +x ~/.local/bin/git-shook
 ```
 
 The installer also places the man page and the completions, which a single file cannot do. The man page matters for `git shook --help`, because git rewrites that into `git help shook` before the script is reached, and without a man page it answers `No manual entry`.
@@ -40,7 +38,7 @@ Then once per clone, `git shook install`, which reads every tracked `shook.toml`
 |---|---|
 | `git shook install` | register what the manifests declare, `--yes` to skip the confirmation, `--only <name>` to take just that manifest |
 | `git shook list` | print what is registered per event, in running order |
-| `git shook doctor` | check that what is declared and what is registered agree |
+| `git shook doctor` | check that what is declared and what is registered agree, entry by entry, `--only <name>` to check just that manifest |
 | `git shook uninstall` | remove the registry and put back the hook that was there before |
 
 ## Manifests
@@ -49,15 +47,7 @@ Then once per clone, `git shook install`, which reads every tracked `shook.toml`
 
 Entries run in sorted order and stop at the first failure. There is no priority field, because the order that matters is that something which rewrites the tree and stages it runs before something that checks what is staged, and where the alphabet gets that wrong the fix is to rename one of them. A declaration only one clone wants goes in `.git/shook/manifests/<name>.toml`, same format, and is read by `install` beside the tracked ones.
 
-Taking over `core.hooksPath` makes git stop reading the old hooks directory, so a hook that was already at an event is kept and runs first, and `uninstall` puts it back where it came from. Everything git-shook writes lives under `.git/shook/`, so none of it is committed. Hooks belong to a repository and never to a directory, so several manifests in one tree all fire on every commit. An argument containing a newline cannot be represented, since an entry file holds one argument per line.
-
-An entry that only cares about some files says which with `paths`, a list of globs, and runs only when the event touched a path one of them matches. At `pre-commit` and `commit-msg` that is what is staged, and at `pre-push` every path a pushed tip adds over its remote, or everything it carries where the remote has never seen it. No other event touches paths, so `install` refuses `paths` anywhere else. An argument that is exactly `{paths}` becomes the paths that matched, one argument each, so a checker that takes files gets just those. A glob is a shell pattern over the whole path, so `*.md` matches a markdown file in any directory, and a path with a newline in its name reads as two.
-
-```toml
-[hooks.pre-commit]
-run = ["prose-check", "{paths}"]
-paths = ["*.md"]
-```
+Taking over `core.hooksPath` makes git stop reading the old hooks directory, so a hook that was already at an event is kept and runs first, and `uninstall` puts it back where it came from. Everything git-shook writes lives under `.git/shook/`, so none of it is committed. Hooks belong to a repository and never to a directory, so several manifests in one tree all fire on every commit, and one that only cares about its own subtree filters the staged paths itself. An argument containing a newline cannot be represented, since an entry file holds one argument per line.
 
 Stdin is read only at the events git feeds it to, `pre-push`, `pre-receive`, `post-receive`, `post-rewrite` and `reference-transaction`, and there every entry gets its own copy. At every other event the entries get nothing on stdin and the caller's input stays where it was, so a `while read` loop that runs git keeps its lines. `proc-receive` talks a protocol both ways and gets the stream as it is.
 
@@ -69,36 +59,9 @@ answers = true
 run = ["sh", "scripts/watchman-query.sh"]
 ```
 
-## The base under it
-
-What runs an event's entries is `shook`, which knows nothing about git. A front works out what a chain holds and when it runs, and `shook run <chain>` runs it: a directory of entries in the byte order of their names, each a working directory and an argument list, with the caller's arguments appended, stdin given to none of them, replayed to each or passed through as it is, stdout and stderr left alone, and the first failure stopping the rest and becoming the exit status. That is all of it, written out as a numbered list at the top of the script, and kept that small so a second implementation of it can be held to the same suite. git-shook is one front. Everything about git, which events feed stdin, which paths an event touched and which entries they select, and the one event whose stdout is a protocol, stays in the front, and `install` copies the base in beside the dispatchers so a hook needs nothing on `PATH` when it fires.
-
-The base is the `shook` script in this repository, and it is the one implementation there is. Should a second one be written, in Rust or anything else, it lives here too, held to `tests/shook_test.sh` (`SHOOK_BASE=<it> ./tests/shook_test.sh`), and installs under the same name, so a front never chooses between two. A front finds the base the same way whichever it is: git-shook takes the `shook` beside its own script, else the first on `PATH`, and copies that one in; claude-shook takes `SHOOK_BASE` where it is set, else the `shook` beside its binary, else the first on `PATH`.
-
-## The Claude Code front
-
-`claude-shook/` is a second front, for the hooks of Claude Code, written in Rust since what it does with JSON is more than a shell script should carry. The host registers one call per event, `claude-shook run <Event>`, and the front runs that event's entries as a chain on the base and answers the host once, the way the host would have folded the answers of hooks registered side by side: an entry exiting 2 blocks and stops the chain, a `deny` beats an `ask` beats an `allow`, every piece of context is kept, and an entry that failed some other way or ran past its timeout is named to the person while the call goes ahead. Entries run one after another, in the order the chain gives.
-
-`./install` builds it into the same `bin` as git-shook and `shook` where cargo is there, and says it left it out where not; the crate pins its toolchain in `claude-shook/rust-toolchain.toml`.
-
-A tool puts a manifest in `.claude/shook/manifests/` of the project, one array per event as the host names it, and runs `claude-shook install`, which writes the entries beside it and one registration per event into `.claude/settings.local.json`, keeping every hook it did not write.
-
-```toml
-name = "guards"
-
-[[PreToolUse]]
-name    = "keep-the-build-off"
-run     = ["scripts/keep-the-build-off"]
-matcher = "Bash"
-paths   = ["engine"]
-timeout = 30
-```
-
-`matcher` is read as the host reads one. `paths` narrows the entry to calls landing under one of those directories: a file tool's file, a shell call's directory and every path its command names. `dir` makes it run in a directory under the project rather than the session's own, and `timeout` is in seconds, 60 where it is absent. The registration runs claude-shook by the path the install found it at, and looks on `PATH` only where that file is gone, so a host whose `PATH` lacks it still runs every guard. Where it is in neither, or no base is found, it says so in one line and the call goes ahead, since refusing every call would leave a session no way to install it. `claude-shook/README.md` has the rest.
-
 ## Contributing
 
-Issues and pull requests are welcome, and it is cheaper to open an issue first if the change is a big one. The suites run with `./tests/run`, need [nutshell](https://github.com/orgrinrt/nutshell) on the path, and build their repositories in temporary directories. `tests/shook_test.sh` is the base's whole behaviour, and `SHOOK_BASE=<path>` runs it against another implementation.
+Issues and pull requests are welcome, and it is cheaper to open an issue first if the change is a big one. The suites run with `./tests/run`, need [nutshell](https://github.com/orgrinrt/nutshell) on the path, and build their repositories in temporary directories.
 
 ## License
 

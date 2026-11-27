@@ -10,9 +10,9 @@
 # test named beside it:
 #
 #   skip the entry comparison                 an_entry_edited_by_hand_is_named_and_a_reinstall_puts_it_back
-#   skip the globs comparison                 globs_edited_by_hand_are_named_as_well
 #   check every manifest under --only         only_leaves_out_a_manifest_it_was_not_asked_about
 #   take any name under --only as found       only_a_name_no_manifest_answers_to_is_named
+#   skip the dispatcher comparison            a_dispatcher_another_git_shook_wrote_is_named
 
 use test log
 
@@ -55,21 +55,6 @@ run = ["true"]'
     assert_exits 1 sh -c "cd '$w' && '$SHOOK' doctor >/dev/null"
     installed "$w"
     assert_contains "$(cd "$w" && "$SHOOK" doctor)" "all good"
-    rm -rf "$w"
-}
-
-#[test]
-globs_edited_by_hand_are_named_as_well() {
-    local w; w="$(a_repo)"
-    a_manifest "$w" mine 'name = "mine"
-
-[hooks.pre-commit]
-run = ["true"]
-paths = ["*.md"]'
-    installed "$w"
-    assert_contains "$(cd "$w" && "$SHOOK" doctor)" "all good"
-    printf '*\n' > "$w/.git/shook/conditions/pre-commit/mine"
-    assert_contains "$(cd "$w" && "$SHOOK" doctor || true)" "the pre-commit entry of mine differs"
     rm -rf "$w"
 }
 
@@ -122,6 +107,21 @@ run = ["true"]'
     installed "$w"
     assert_exits 1 sh -c "cd '$w' && '$SHOOK' doctor --no-such-flag 2>/dev/null"
     assert_contains "$(cd "$w" && "$SHOOK" doctor --no-such-flag 2>&1 || true)" "unknown flag"
+    rm -rf "$w"
+}
+
+#[test]
+a_dispatcher_another_git_shook_wrote_is_named() {
+    local w; w="$(a_repo)"
+    a_manifest "$w" mine 'name = "mine"
+
+[hooks.pre-commit]
+run = ["true"]'
+    installed "$w"
+    assert_contains "$(cd "$w" && "$SHOOK" doctor)" "all good"
+    printf '#!/bin/sh\n# git-shook dispatcher v1\n' > "$w/.git/shook/hooks/pre-commit"
+    chmod +x "$w/.git/shook/hooks/pre-commit"
+    assert_contains "$(cd "$w" && "$SHOOK" doctor || true)" "the pre-commit dispatcher was written by another git-shook"
     rm -rf "$w"
 }
 

@@ -1,4 +1,4 @@
-.TH GIT-SHOOK 1 "2026-09-05" "git-shook 0.2.0" "Git Extensions"
+.TH GIT-SHOOK 1 "2026-09-05" "git-shook 0.1.0" "Git Extensions"
 .SH NAME
 git-shook \- run several tools at one git hook event
 .SH SYNOPSIS
@@ -58,7 +58,8 @@ What is registered, per event, in the order it runs.
 .RB [ \-\-only
 .IR name ]
 Whether what the manifests declare and what is registered still agree, entry by
-entry, with each dispatcher this git\-shook's and the base the one beside it.
+entry, with each dispatcher this git\-shook's and nothing an older one
+left beside them.
 Exits non\-zero when they do not.
 .B \-\-only
 checks the manifests of that name and no other, as
@@ -66,10 +67,7 @@ checks the manifests of that name and no other, as
 registers them, so a tool checks its own registration without failing on
 another's.
 A name no manifest has is named and exits non\-zero, and a flag doctor does not
-take is refused, so a caller can tell this doctor from one that checks less:
-asked with
-.B \-\-only
-and a name no manifest can have, it answers non\-zero.
+take is refused.
 .TP
 .B uninstall
 Remove the registry, clear
@@ -129,24 +127,6 @@ common git directory;
 unsets it again when it names the dispatcher, and
 .B doctor
 reports one naming a dispatcher that is gone.
-.PP
-.I paths
-is a list of globs, and an entry carrying it runs only when the event touched a
-path one of them matches: what is staged at
-.B pre\-commit
-and
-.BR commit\-msg ,
-and at
-.B pre\-push
-every path a pushed tip adds over its remote, or everything the tip carries
-where the remote has never seen it. No other event touches paths, so
-.I paths
-anywhere else is refused. An argument that is exactly
-.B {paths}
-becomes the matching paths, one argument each, and is refused in an entry with
-no
-.IR paths .
-A glob is a shell pattern over the whole path.
 .SH FILES
 .TP
 .I shook.toml
@@ -162,21 +142,6 @@ committed nor something anybody has to ignore.
 .I .git/shook/entries/<event>/<name>
 One registered entry. The first line is the working directory relative to the
 repository root, and every line after it is one argument.
-.TP
-.I .git/shook/conditions/<event>/<name>
-The globs of an entry registered with
-.IR paths ,
-one per line.
-.TP
-.I .git/shook/shook
-The base every dispatcher hands its chain to, copied in by
-.B install
-from the
-.B shook
-beside
-.B git\-shook
-or on
-.IR PATH .
 .TP
 .I .git/shook/answers/<event>
 The name of the entry that answers the event's protocol on stdout.
@@ -219,7 +184,6 @@ one argument per line, and such a manifest is refused rather than silently
 turned into two arguments.
 .SH SEE ALSO
 .BR githooks (5),
-.BR git\-config (1),
-.BR shook (1)
+.BR git-config (1)
 .SH AUTHOR
 orgrinrt <orgrinrt@ikiuni.dev>
