@@ -26,8 +26,8 @@ DISPATCH_VERSION=3
 # This is what goes at the hook event. It works out what git handed the event,
 # and hands the event's chain to the base, `shook`, which runs the entries in
 # order and stops at the first that fails. What is git's is decided here and
-# nowhere else: which events feed stdin, which paths an event touched, which
-# entries those paths select, and the one event whose stdout is a protocol.
+# nowhere else: which events feed stdin, and the one event whose stdout is a
+# protocol.
 #
 # An entry is data rather than a script: the first line is the directory to run
 # in, relative to the repository root, and every line after it is one argument.
@@ -138,67 +138,7 @@ if [ "\$ev" = fsmonitor-watchman ]; then
 	exit \$st
 fi
 
-# An entry registered with \`paths\` runs only where the event touched a path one
-# of its globs matches, and an argument that is exactly \`{paths}\` becomes those
-# paths, one argument each. What an event touches: what is staged, at
-# \`pre-commit\` and \`commit-msg\`; at \`pre-push\`, every path a pushed tip adds
-# over its remote, or every path it carries where the remote is new or a commit
-# this clone does not have; at every other event nothing, so an entry with
-# globs never runs there and \`install\` refuses one. Where any entry has globs,
-# the chain handed to the base is the selected one, written beside this run.
-c="\$g/shook/conditions/\$ev"
-chain=\$d
-
-if [ -d "\$c" ] && [ -n "\$(ls "\$c")" ]; then
-	if [ "\$mode" = replay ]; then
-		cat >"\$tmp/stdin"
-		exec <"\$tmp/stdin"
-	fi
-	z=0000000000000000000000000000000000000000
-	{
-		case \$ev in
-		pre-commit | commit-msg) git -C "\$root" diff --cached --name-only -z ;;
-		pre-push)
-			while read -r _lr ls _rr rs; do
-				[ -n "\${ls:-}" ] && [ "\$ls" != \$z ] || continue
-				if [ "\$rs" != \$z ] && git -C "\$root" cat-file -e "\$rs" 2>/dev/null; then
-					git -C "\$root" diff --name-only -z "\$rs" "\$ls"
-				else
-					git -C "\$root" ls-tree -r --name-only -z "\$ls"
-				fi
-			done <"\$tmp/stdin"
-			;;
-		esac
-	} | tr '\\000' '\\n' | awk '!seen[\$0]++' >"\$tmp/touched"
-	chain="\$tmp/chain"
-	mkdir "\$chain"
-	for e in "\$d"/*; do
-		[ -f "\$e" ] || continue
-		n=\${e##*/}
-		if [ ! -f "\$c/\$n" ]; then
-			cp "\$e" "\$chain/\$n"
-			continue
-		fi
-		: >"\$tmp/matched"
-		while IFS= read -r p; do
-			while IFS= read -r glob; do
-				case \$p in
-				\$glob)
-					printf '%s\\n' "\$p" >>"\$tmp/matched"
-					break
-					;;
-				esac
-			done <"\$c/\$n"
-		done <"\$tmp/touched"
-		[ -s "\$tmp/matched" ] || continue
-		head -n 1 "\$e" >"\$chain/\$n"
-		tail -n +2 "\$e" | while IFS= read -r a; do
-			if [ "\$a" = "{paths}" ]; then cat "\$tmp/matched"; else printf '%s\\n' "\$a"; fi
-		done >>"\$chain/\$n"
-	done
-fi
-
-"\$base" run --root "\$root" --stdin "\$mode" "\$chain" "\$@"
+"\$base" run --root "\$root" --stdin "\$mode" "\$d" "\$@"
 exit \$?
 DISPATCH
 }
@@ -206,7 +146,7 @@ DISPATCH
 # ---------------------------------------------------------------------------
 # the manifest reader
 #
-# One awk program, several modes. It reads the subset of toml the format uses and
+# One awk program, two modes. It reads the subset of toml the format uses and
 # refuses the rest by name, rather than accepting something it cannot render.
 #
 # The string walk is character by character and tracks whether it is inside a
@@ -245,7 +185,7 @@ function unquote(buf,   i, c, inq, esc, cur, n) {
 function flush(   i, n) {
 	if (buf == "") return
 	n = unquote(buf)
-	if (mode == key && ev == want) for (i = 0; i < n; i++) print out[i]
+	if (mode == "argv" && ev == want) for (i = 0; i < n; i++) print out[i]
 	buf = ""
 }
 
@@ -296,22 +236,8 @@ line ~ /^answers[ \t]*=/ {
 
 line ~ /^run[ \t]*=/ {
 	if (ev == "") fail("run outside a [hooks.<event>] section")
-	buf = line; key = "argv"
+	buf = line
 	sub(/^run[ \t]*=[ \t]*/, "", buf)
-	if (index(buf, "]")) flush()
-	else collecting = 1
-	next
-}
-
-# The globs an entry runs for. Only the events that touch paths have any, so the
-# key is refused anywhere else rather than accepted and never run.
-line ~ /^paths[ \t]*=/ {
-	if (ev == "") fail("paths outside a [hooks.<event>] section")
-	if (ev != "pre-commit" && ev != "commit-msg" && ev != "pre-push")
-		fail("paths is for pre-commit, commit-msg and pre-push, which touch paths; found it under " ev)
-	if (mode == "conditioned" && ev == want) print ev
-	buf = line; key = "paths"
-	sub(/^paths[ \t]*=[ \t]*/, "", buf)
 	if (index(buf, "]")) flush()
 	else collecting = 1
 	next
@@ -702,13 +628,6 @@ EOF
 			check_event "$m" "$ev"
 			argv=$(manifest_read argv "$(mf "$root" "$m")" "$ev")
 			[ -n "$argv" ] || die "$m: [hooks.$ev] has no run"
-			globs=$(manifest_read paths "$(mf "$root" "$m")" "$ev")
-			conditioned=$(manifest_read conditioned "$(mf "$root" "$m")" "$ev")
-			[ -z "$conditioned" ] || [ -n "$globs" ] ||
-				die "$m: [hooks.$ev] has paths with no glob in it, so it would never run; give it one, or drop paths"
-			if [ -z "$conditioned" ] && printf '%s\n' "$argv" | grep -qx '{paths}'; then
-				die "$m: [hooks.$ev] runs with {paths} and has no paths to select them; add paths = [\"<glob>\", ...]"
-			fi
 			if shadowed "$ev" "$name" "$m"; then
 				printf '  %-14s %-16s replaced by this clone'"'"'s own manifest of that name\n' "$ev" "$name"
 				continue
@@ -719,7 +638,6 @@ EOF
 			printf '  %-14s %-16s %s' "$ev" "$name" "$(show_argv "$argv")"
 			[ -n "$wd" ] && printf ' (in %s)' "$wd"
 			case " $answers " in *" $ev "*) printf ' (answers)' ;; esac
-			[ -n "$globs" ] && printf ' (for %s)' "$(printf '%s\n' "$globs" | paste -sd ' ' -)"
 			printf '\n'
 		done
 	done <<EOF
@@ -814,7 +732,7 @@ EOF
 		check_name "$m" "$name"
 		current="$current $name"
 		for f in "$sd"/entries/*/"$name"; do
-			[ -f "$f" ] && rm -f "$f" "$sd/conditions/${f#"$sd/entries/"}"
+			[ -f "$f" ] && rm -f "$f"
 		done
 	done <<EOF
 $manifests
@@ -825,7 +743,7 @@ EOF
 			case " $current " in *" $old "*) continue ;; esac
 			for f in "$sd"/entries/*/"$old"; do
 				[ -f "$f" ] || continue
-				rm -f "$f" "$sd/conditions/${f#"$sd/entries/"}"
+				rm -f "$f"
 				printf 'removed the %s entry of %s, which no manifest answers to\n' "$old" "${f%/*}"
 			done
 		done <"$sd/names"
@@ -839,7 +757,7 @@ EOF
 			old=${f##*/}
 			[ "$old" = 00-existing ] && continue
 			case " $current " in *" $old "*) continue ;; esac
-			rm -f "$f" "$sd/conditions/${f#"$sd/entries/"}"
+			rm -f "$f"
 			printf 'removed the %s entry of %s, which no manifest answers to\n' "$old" "${f%/*}"
 		done
 	fi
@@ -876,13 +794,6 @@ EOF
 				printf '%s\n' "$wd"
 				manifest_read argv "$(mf "$root" "$m")" "$ev"
 			} >"$sd/entries/$ev/$name"
-			# The globs sit beside the entry under the same name, and their
-			# presence is what makes the dispatcher select by them.
-			globs=$(manifest_read paths "$(mf "$root" "$m")" "$ev")
-			if [ -n "$globs" ]; then
-				mkdir -p "$sd/conditions/$ev"
-				printf '%s\n' "$globs" >"$sd/conditions/$ev/$name"
-			fi
 		done
 	done <<EOF
 $manifests
@@ -1160,8 +1071,6 @@ cmd_list() {
 			wd=$(head -n 1 "$e")
 			printf '  %-16s %s' "${e##*/}" "$(show_argv "$(tail -n +2 "$e")")"
 			[ -n "$wd" ] && printf ' (in %s)' "$wd"
-			c="$sd/conditions/${ev##*/}/${e##*/}"
-			[ -f "$c" ] && printf ' (for %s)' "$(paste -sd ' ' - <"$c")"
 			printf '\n'
 		done
 	done
@@ -1242,9 +1151,7 @@ EOF
 				printf '\n'
 				manifest_read argv "$(mf "$root" "$m")" "$ev"
 			})
-			globs=$(manifest_read paths "$(mf "$root" "$m")" "$ev")
-			have_globs=$(cat "$sd/conditions/$ev/$name" 2>/dev/null)
-			if [ "$want" != "$(cat "$sd/entries/$ev/$name")" ] || [ "$globs" != "$have_globs" ]; then
+			if [ "$want" != "$(cat "$sd/entries/$ev/$name")" ]; then
 				printf 'the %s entry of %s differs from what %s declares. Run `git shook install`.\n' "$ev" "$name" "$m"
 				bad=1
 			fi
@@ -1378,7 +1285,7 @@ cmd_uninstall() {
 	# The manifests a clone keeps in `manifests/` are declarations and not
 	# registry, and are whatever the operator or a tool put there, so they stay
 	# and the next `install` picks them up again.
-	rm -rf "$sd/hooks" "$sd/entries" "$sd/conditions" "$sd/shook" "$sd/kept" "$sd/declined" "$sd/from" "$sd/oldpath" "$sd/names" "$sd/answers"
+	rm -rf "$sd/hooks" "$sd/entries" "$sd/shook" "$sd/kept" "$sd/declined" "$sd/from" "$sd/oldpath" "$sd/names" "$sd/answers"
 	rmdir "$sd" 2>/dev/null || true
 	# And whatever an older git-shook left at the repository root, on the same
 	# terms `install` uses: a tracked one is somebody's committed file and not
@@ -1432,10 +1339,6 @@ At fsmonitor-watchman stdout is the reply to git, so one entry says
 `answers = true` in its section and the others run with their output discarded.
 With none, a hook that was already there answers, else every path is reported
 changed. Stdin reaches entries only at the events git feeds it to.
-
-An entry with `paths = ["*.md"]` runs only where the event touched a path a
-glob matches: what is staged at pre-commit and commit-msg, what a pushed tip
-adds at pre-push. An argument that is exactly {paths} becomes those paths.
 
 The entries of an event run on shook, the chain runner that ships beside this
 script; install copies it in beside the dispatchers.

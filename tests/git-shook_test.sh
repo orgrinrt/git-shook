@@ -359,6 +359,19 @@ answers_is_refused_at_an_event_with_no_protocol_to_answer() {
 }
 
 #[test]
+a_manifest_selecting_by_paths_is_refused_before_anything_moves() {
+    local w; w="$(a_repo)"
+    mkdir -p "$w/.git/shook/manifests"
+    printf 'name = "one"\n\n[hooks.pre-commit]\nrun = ["true"]\npaths = ["*.md"]\n' \
+        > "$w/.git/shook/manifests/one.toml"
+
+    local out; out="$(cd "$w" && "$SHOOK" install --yes 2>&1)" && fail "a manifest with paths was installed"
+    assert_contains "$out" 'unrecognised line: paths = ["*.md"]'
+    assert_fails test -d "$w/.git/shook/entries"
+    rm -rf "$w"
+}
+
+#[test]
 a_persons_own_fsmonitor_hook_kept_by_install_is_the_answer() {
     local w; w="$(an_fsmonitor_repo)"
     printf '#!/bin/sh\nprintf "MINE\\0f2\\0"\n' > "$w/.git/hooks/fsmonitor-watchman"

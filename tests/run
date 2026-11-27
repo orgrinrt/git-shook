@@ -2,7 +2,7 @@
 # Every suite under tests/, as one run: the base's, then the front's.
 #
 #   ./tests/run
-#   TEST_FILTER=paths ./tests/run
+#   TEST_FILTER=doctor ./tests/run
 
 use test log
 
