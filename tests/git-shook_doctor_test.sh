@@ -113,6 +113,19 @@ run = ["true"]'
 }
 
 #[test]
+a_flag_doctor_does_not_take_is_refused() {
+    local w; w="$(a_repo)"
+    a_manifest "$w" mine 'name = "mine"
+
+[hooks.pre-commit]
+run = ["true"]'
+    installed "$w"
+    assert_exits 1 sh -c "cd '$w' && '$SHOOK' doctor --no-such-flag 2>/dev/null"
+    assert_contains "$(cd "$w" && "$SHOOK" doctor --no-such-flag 2>&1 || true)" "unknown flag"
+    rm -rf "$w"
+}
+
+#[test]
 only_still_names_a_hooks_path_that_is_not_git_shooks() {
     local w; w="$(a_repo)"
     a_manifest "$w" mine 'name = "mine"
